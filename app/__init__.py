@@ -15,5 +15,9 @@ def create_app():
 
   # 로그인/쿠키 없으면 supports_credentials=True 굳이 필요 없음
   cors.init_app(app, origins=app.config["CORS_ORIGINS"])
+  
+  from .blueprints.sensormodel import bp as sensormodel_bp
+  
+  app.register_blueprint(sensormodel_bp, url_prefix='/sensormodel')
 
   return app
