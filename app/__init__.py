@@ -16,4 +16,8 @@ def create_app():
   # 로그인/쿠키 없으면 supports_credentials=True 굳이 필요 없음
   cors.init_app(app, origins=app.config["CORS_ORIGINS"])
 
+  from .blueprints.camera import bp as camera_bp
+
+  app.register_blueprint(camera_bp, url_prefix='/camera')
+
   return app
