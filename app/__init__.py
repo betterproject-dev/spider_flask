@@ -19,5 +19,9 @@ def create_app():
   from .blueprints.camera import bp as camera_bp
 
   app.register_blueprint(camera_bp, url_prefix='/camera')
+  
+  # === blueprints ===
+  from .blueprints.test import bp as test_bp # 테스트용(삭제)
+  app.register_blueprint(test_bp, url_prefix='/test') # 테스트용(삭제)
 
   return app
