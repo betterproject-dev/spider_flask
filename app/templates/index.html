@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SPIDER 센서 대시보드</title>
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+</head>
+<body>
+    <h1>센서 실시간 데이터</h1>
+    <pre id="data"></pre>
+
+    <script>
+        const socket = io();
+        const dataEl = document.getElementById('data');
+
+        socket.on('sensor_data', (msg) => {
+            dataEl.textContent += `${msg.topic} : ${msg.data}\n`;
+        });
+    </script>
+</body>
+</html>
