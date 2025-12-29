@@ -48,7 +48,7 @@ def calculate_danger_score(t_ch, h_ch, n_ch):
                   
     return round(final_score, 2)
 
-#예측데이터 저장하기 - app.mqtt.py에서 호출할거임
+#예측 후 저장하기 - app.mqtt.py에서 호출할거임
 def predictData(machine_number):
   data=get_data(machine_number)
   input_sequence =[]
@@ -91,3 +91,13 @@ def predictData(machine_number):
   ds = DangerScore(dangerscore = danger_score)
   db.session.add(ds)
   db.session.commit()
+
+#최근 10분간의 위험점수 불러오기
+@db.get('/load_score/<machine_number>')
+def load_score(machine_number):
+  global DATA_COUNT
+  last_10_scores = DangerScore.query.filter_by(machine_number=machine_number).order_by(desc(DangerScore.id)).limit(DATA_COUNT).all()
+  last_10_scores.reverse()
+  scores = [score.to_dict() for score in last_10_scores]
+  
+  return send_res(scores, True, '', 200)
