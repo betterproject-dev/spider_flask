@@ -2,6 +2,7 @@ from sqlalchemy import desc
 from app import db
 from flask import Blueprint, jsonify
 from ..models.sensors import Sensors
+from ..models.alert_event import AlertEvent
 from ..extensions import model, scaler_X, scaler_y
 import numpy as np
 
