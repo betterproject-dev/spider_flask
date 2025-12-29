@@ -2,8 +2,10 @@ from sqlalchemy import desc
 from app import db
 from flask import Blueprint, jsonify
 from ..models.sensors import Sensors
+from ..models.dangerScore import DangerScore
 from ..models.alert_event import AlertEvent
 from ..extensions import model, scaler_X, scaler_y
+from ..utils.send_res import send_res
 import numpy as np
 
 bp = Blueprint('sensormodel', __name__)
@@ -17,7 +19,7 @@ def get_data(machine_number):
   global DATA_COUNT
   last_10_logs = Sensors.query.filter_by(machine_number=machine_number).order_by(desc(Sensors.id)).limit(DATA_COUNT).all()
   last_10_logs.reverse()
-  log_data = [[log.temperature, log.humidity, log.noise] for log in last_10_logs]
+  log_data = [[log.temperature_DS18B20, log.humidity, log.noise] for log in last_10_logs]
   
   return log_data
 
@@ -46,8 +48,7 @@ def calculate_danger_score(t_ch, h_ch, n_ch):
                   
     return round(final_score, 2)
 
-#예측데이터 받아오기/프론트에 줄 정보로 가공하기  
-@bp.get('/predict/<machine_number>')
+#예측데이터 저장하기 - app.mqtt.py에서 호출할거임
 def predictData(machine_number):
   data=get_data(machine_number)
   input_sequence =[]
@@ -87,4 +88,6 @@ def predictData(machine_number):
   print(danger_score)
   print("====================danger_score==================")
   
-  return jsonify({'ok':True, 'danger_score':float(danger_score)})
+  ds = DangerScore(dangerScore = float(danger_score), machine_number = machine_number)
+  db.session.add(ds)
+  db.session.commit()
