@@ -17,6 +17,10 @@ class Config:
   # 한글 JSON 깨짐 방지
   JSON_AS_ASCII = False
 
+  # MQTT
+  MQTT_BROKER = "soyeon"
+  MQTT_PORT = 1883
+
   # CORS (프론트 주소)
   CORS_ORIGINS = [o.strip() for o in os.getenv(
     "CORS_ORIGINS",
