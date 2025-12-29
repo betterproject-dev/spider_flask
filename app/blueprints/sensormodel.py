@@ -19,7 +19,7 @@ def get_data(machine_number):
   global DATA_COUNT
   last_10_logs = Sensors.query.filter_by(machine_number=machine_number).order_by(desc(Sensors.id)).limit(DATA_COUNT).all()
   last_10_logs.reverse()
-  log_data = [[log.temperature, log.humidity, log.noise] for log in last_10_logs]
+  log_data = [[log.temperature_DS18B20, log.humidity, log.noise] for log in last_10_logs]
   
   return log_data
 
@@ -88,6 +88,6 @@ def predictData(machine_number):
   print(danger_score)
   print("====================danger_score==================")
   
-  ds = DangerScore(dangerscore = danger_score)
+  ds = DangerScore(dangerScore = float(danger_score), machine_number = machine_number)
   db.session.add(ds)
   db.session.commit()
