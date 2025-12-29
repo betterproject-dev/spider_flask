@@ -52,6 +52,7 @@ def on_message(client, userdata, msg):
 
             sensor = Sensors(
                 machine_number=machine_no,
+                temperature_DS18B20=data.get("temperature_DS18B20"), # 온도(부착형)
                 temperature=data.get("temperature"),
                 humidity=data.get("humidity"),
                 noise=data.get("noise"),
