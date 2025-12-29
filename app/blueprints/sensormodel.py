@@ -11,6 +11,11 @@ bp = Blueprint('sensormodel', __name__)
 #불러올 칼럼 수
 DATA_COUNT = 10
 
+# 긴급 점수
+EMERGENCY_TH = 70
+# 위험 (표시만)
+WARNING_TH = 40
+
 #필요한 만큼의 데이터 불러오기
 #return [[온도, 습도, 소음],[온도, 습도, 소음].......]
 def get_data(machine_number):
@@ -45,6 +50,16 @@ def calculate_danger_score(t_ch, h_ch, n_ch):
                   (n_score * weights['noise'])
                   
     return round(final_score, 2)
+
+# 위험 점수를 기준으로 설비 상태(NORMAL / WARNING / EMERGENCY)를 판단하는 함수
+def score_to_level(score: float) -> str:
+
+  if score >= EMERGENCY_TH:
+    return "STOP"
+  if score >= WARNING_TH:
+    return "WARNING"
+  
+  return "NORMAL"
 
 #예측데이터 받아오기/프론트에 줄 정보로 가공하기  
 @bp.get('/predict/<machine_number>')
@@ -86,5 +101,9 @@ def predictData(machine_number):
   print(preded_final)
   print(danger_score)
   print("====================danger_score==================")
+
+  status = score_to_level(danger_score)
+
+
   
   return jsonify({'ok':True, 'danger_score':float(danger_score)})
