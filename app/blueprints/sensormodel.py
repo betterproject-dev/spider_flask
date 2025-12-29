@@ -7,6 +7,7 @@ from ..models.alert_event import AlertEvent
 from ..extensions import model, scaler_X, scaler_y
 from ..utils.send_res import send_res
 import numpy as np
+from ..services.danger_service import score_to_level
 
 bp = Blueprint('sensormodel', __name__)
 
@@ -87,7 +88,23 @@ def predictData(machine_number):
   print(preded_final)
   print(danger_score)
   print("====================danger_score==================")
+
+  status = score_to_level(danger_score)
+
+  if status == "STOP":
+    ongoing = (AlertEvent.query
+                .filter_by(machine_number=machine_number)
+                .filter(AlertEvent.ended_at.is_(None))
+                .first())
+    
+    if not ongoing:
+      envet = AlertEvent(
+        machine_number=machine_number,
+        level="EMERGENCY",
+        danger_score=danger_score,
+        title=f"{machine_number}호기 "
+      )
   
-  ds = DangerScore(dangerscore = danger_score)
+  ds = DangerScore(dangerScore = danger_score)
   db.session.add(ds)
   db.session.commit()
