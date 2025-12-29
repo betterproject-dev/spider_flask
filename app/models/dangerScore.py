@@ -1,12 +1,14 @@
 from ..extensions import db
 
-class Machines(db.Model):
-    __tablename__ = 'sensormodel'
+class DangerScore(db.Model):
+    __tablename__ = 'danger_score'
 
     id = db.Column(db.Integer, primary_key=True)
     dangerScore = db.Column(db.Integer, nullable = False)
+    machine_number = db.Column(db.Integer, db.ForeignKey('machines.id'), nullable=False)
     def to_dict(self):
         return{
             'id':self.id,
-            'dangerScore':self.dangerScore
+            'dangerScore':self.dangerScore,
+            'machine_number':self.machine_number
         }

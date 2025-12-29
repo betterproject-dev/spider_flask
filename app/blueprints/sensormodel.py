@@ -2,6 +2,7 @@ from sqlalchemy import desc
 from app import db
 from flask import Blueprint, jsonify
 from ..models.sensors import Sensors
+from ..models.dangerScore import DangerScore
 from ..models.alert_event import AlertEvent
 from ..extensions import model, scaler_X, scaler_y
 from ..utils.send_res import send_res
@@ -47,8 +48,7 @@ def calculate_danger_score(t_ch, h_ch, n_ch):
                   
     return round(final_score, 2)
 
-#예측데이터 받아오기/프론트에 줄 정보로 가공하기  
-@bp.get('/predict/<machine_number>')
+#예측데이터 저장하기 - app.mqtt.py에서 호출할거임
 def predictData(machine_number):
   data=get_data(machine_number)
   input_sequence =[]
@@ -88,4 +88,6 @@ def predictData(machine_number):
   print(danger_score)
   print("====================danger_score==================")
   
-  return send_res(float(danger_score), True, '', 200)
+  ds = DangerScore(dangerscore = danger_score)
+  db.session.add(ds)
+  db.session.commit()
