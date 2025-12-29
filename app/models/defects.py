@@ -6,5 +6,5 @@ class Defects (db.Model):
 
   id = db.Column(db.Integer, primary_key=True)
   created_at = db.Column(db.DateTime, default=datetime.now)
-  defect_type = db.Column(db.ENUM('LABEL', 'CONTAINER', 'COLOR', 'WEIGHT', name='defect_types')) # 불량 종류
-  machine_number = db.Column(db.Integer, db.ForeignKey('machines.id', nullable=False))
+  defect_type = db.Column(db.Enum('LABEL', 'CONTAINER', 'COLOR', 'WEIGHT', name='defect_types')) # 불량 종류
+  machine_number = db.Column(db.Integer, db.ForeignKey('machines.id'), nullable=False)
