@@ -7,7 +7,7 @@ class Sensors(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     machine_number = db.Column(db.Integer, db.ForeignKey('machines.id')) # nullable=False
     created_at = db.Column(db.DateTime, default=datetime.now)
-    temperature = db.Column(db.Float) # 온도
+    temperature_DS18B20 = db.Column(db.Float) # 온도(부착형)
     humidity = db.Column(db.Float)  # 습도
     noise = db.Column(db.Float) # 소음
     leak = db.Column(db.Boolean)  # 누수
@@ -17,7 +17,7 @@ class Sensors(db.Model):
             'id':self.id,
             'machine_number':self.machine_number,
             'created_at':self.created_at,
-            'temperature':self.temperature,
+            "temperature_DS18B20":self.temperature_DS18B20,
             'humidity':self.humidity,
             'noise':self.noise,
             'leak':self.leak

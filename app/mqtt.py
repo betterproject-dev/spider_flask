@@ -4,6 +4,7 @@ import paho.mqtt.client as mqtt
 from .extensions import db, socketio
 from .models.machines import Machines
 from .models.sensors import Sensors
+from .blueprints.sensormodel import predictData
 
 
 def init_mqtt(app):
@@ -51,14 +52,15 @@ def on_message(client, userdata, msg):
 
             sensor = Sensors(
                 machine_number=machine_no,
-                temperature=data.get("temperature_DS18B20"),
+                temperature_DS18B20=data.get("temperature_DS18B20"),
                 humidity=data.get("humidity"),
                 noise=data.get("noise"),
                 leak=data.get("leak"),
             )
 
-            # db.session.add(sensor)
-            # db.session.commit()
+            db.session.add(sensor)
+            db.session.commit()
+            predictData(machine_no) #센서 값 저장되면 바로 위험점수 계산하여 db저장합니다.
 
             socketio.emit("sensor_data", {
 							'temperature' : data.get("temperature"), # 공장 온도 (온습도 센서)
@@ -66,7 +68,7 @@ def on_message(client, userdata, msg):
 							'humidity' : sensor.humidity,
 							'noise' : sensor.noise,
 							'leak' : sensor.leak,
-              # 'timestamp' : sensor.created_at.strftime('%H:%M:%S')
+              'timestamp' : sensor.created_at.strftime('%H:%M:%S')
 						})
 
     except Exception as e:
