@@ -50,12 +50,21 @@ def on_message(client, userdata, msg):
                 db.session.add(m)
                 db.session.commit()
 
+            temp_ds = data.get("temperature_DS18B20")
+            humidity = data.get("humidity")
+            noise = data.get("noise")
+
+            # 필수 센서 중 하나라도 None이면 저장 안 함
+            if temp_ds is None or humidity is None or noise is None :
+                print("⚠️ 센서 값 중 NULL 있음 → DB 저장 안 함")
+                return
+
             sensor = Sensors(
                 machine_number=machine_no,
                 temperature_DS18B20=data.get("temperature_DS18B20"),
                 humidity=data.get("humidity"),
                 noise=data.get("noise"),
-                leak=data.get("leak"),
+                leak=bool("leak"),
             )
 
             db.session.add(sensor)
