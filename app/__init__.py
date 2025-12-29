@@ -23,6 +23,8 @@ def create_app():
 
   # 로그인/쿠키 없으면 supports_credentials=True 굳이 필요 없음
   cors.init_app(app, origins=app.config["CORS_ORIGINS"])
+  
+  from .blueprints.sensormodel import bp as sensormodel_bp
 
   # ==============================
   # MQTT 설정
@@ -67,9 +69,18 @@ def create_app():
                 noise=data.get("noise"),
                 leak=data.get("leak")
             )
-
-            db.session.add(sensor_entry)
-            db.session.commit()
+            
+            # 너무 많이 저장돼서 임시로  db 주석처리 해놓음!
+            # db.session.add(sensor_entry)
+            # db.session.commit()
+            
+            socketio.emit("sensor_data", {
+							'temperature' : sensor_entry.temperature,
+							'humidity' : sensor_entry.humidity,
+							'noise' : sensor_entry.noise,
+							'leak' : sensor_entry.leak,
+              'timestamp' : sensor_entry.created_at.strftime('%H:%M:%S')
+						})
 
       except Exception as e:
           print("MQTT message parsing / DB error:", e)
@@ -77,44 +88,18 @@ def create_app():
   # ==============================
   # MQTT 클라이언트
   # ==============================
-#   mqtt_client = mqtt.Client()
-#   mqtt_client.on_connect = on_connect
-#   mqtt_client.on_message = on_message
-#   mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-#   mqtt_client.loop_start()
-
-  # === socket.io ===
-  @socketio.on('connect')
-  def handle_connect():
-    if not app.config['BG_TASK_STARTED']:
-      socketio.start_background_task(background_thread)
-      app.config['BG_TASK_STARTED'] = True
-    print("클라이언트가 접속함")
-
-  from .blueprints.camera import bp as camera_bp
-
-  app.register_blueprint(camera_bp, url_prefix='/camera')
+  mqtt_client = mqtt.Client()
+  mqtt_client.on_connect = on_connect
+  mqtt_client.on_message = on_message
+  mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+  mqtt_client.loop_start()
   
   # === blueprints ===
   from .blueprints.test import bp as test_bp # 테스트용(삭제)
   app.register_blueprint(test_bp, url_prefix='/test') # 테스트용(삭제)
+	
+  from .blueprints.camera import bp as camera_bp
+  app.register_blueprint(camera_bp, url_prefix='/camera')
+  app.register_blueprint(sensormodel_bp, url_prefix='/sensormodel')
 
   return app
-
-def background_thread():
-  temperature = 10
-  humidity = 10
-  noise = 10
-  leak = False
-  while True:
-    socketio.sleep(2)
-    temperature += 1
-    humidity += 1
-    noise += 1
-    leak = not leak
-    socketio.emit("sensor_data", {
-      'temperature' : temperature,
-      'humidity' : humidity,
-      'noise' : noise,
-      'leak' : leak,
-    })
