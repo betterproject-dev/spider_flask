@@ -70,7 +70,7 @@ def on_message(client, userdata, msg):
 
             db.session.add(sensor)
             db.session.commit()
-            predictData(machine_no) #센서 값 저장되면 바로 위험점수 계산하여 db저장합니다.
+            # predictData(machine_no) #센서 값 저장되면 바로 위험점수 계산하여 db저장합니다.
 
     except Exception as e:
         print("MQTT 처리 오류:", e)
