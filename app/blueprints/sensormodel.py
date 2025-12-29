@@ -3,6 +3,7 @@ from app import db
 from flask import Blueprint, jsonify
 from ..models.sensors import Sensors
 from ..extensions import model, scaler_X, scaler_y
+from ..utils.send_res import send_res
 import numpy as np
 
 bp = Blueprint('sensormodel', __name__)
@@ -86,4 +87,4 @@ def predictData(machine_number):
   print(danger_score)
   print("====================danger_score==================")
   
-  return jsonify({'ok':True, 'danger_score':float(danger_score)})
+  return send_res(float(danger_score), True, '', 200)
