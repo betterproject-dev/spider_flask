@@ -44,7 +44,7 @@ def pick_main_sensor(log):
   candidates = [] # (센서명, 현재값, 임계치, 초과여부) 후보 리스트
 
   # 온도 임계치 초과 여부 후보 등록
-  candidates.append(("온도센서", log.temperature, TEMP_LIMIT, log.temperature is not None and log.temperature >= TEMP_LIMIT))
+  candidates.append(("온도센서", log.temperature_DS18B20, TEMP_LIMIT, log.temperature_DS18B20 is not None and log.temperature_DS18B20 >= TEMP_LIMIT))
   # 습도 임계치 초과 여부 후보 등록
   candidates.append(("습도센서", log.humidity, HUM_LIMIT, log.humidity is not None and log.humidity >= HUM_LIMIT))
   # 소음 임계치 초과 여부 후보 등록
