@@ -62,15 +62,14 @@ def predictData(machine_number):
   status = score_to_level(danger_score)
 
   # danger_score 저장 (서비스)
-  saved_row = save_danger_score(
+  save_danger_score(
     machine_number=machine_number,
     danger_score=danger_score
   )
 
   # STOP이면 알림 이벤트 저장(중복 방지) (서비스)
-  stop_event = None
   if status == "STOP":
-    stop_event = create_stop_event_if_needed(
+    create_stop_event_if_needed(
       machine_number=machine_number,
       danger_score=danger_score
     )
