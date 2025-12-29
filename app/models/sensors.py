@@ -13,3 +13,14 @@ class Sensors(db.Model):
     noise = db.Column(db.Float) # 소음
     leak = db.Column(db.Boolean)  # 누수
     
+    def to_dict(self):
+        return{
+            'id':self.id,
+            'machine_number':self.machine_number,
+            'created_at':self.created_at,
+            "temperature_DS18B20":self.temperature_DS18B20,
+            'temperature':self.temperature,
+            'humidity':self.humidity,
+            'noise':self.noise,
+            'leak':self.leak
+        }
