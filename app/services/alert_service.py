@@ -6,13 +6,13 @@ from ..models.alert_event import AlertEvent
 from ..models.sensors import Sensors
 from ..services.danger_service import pick_main_sensor, make_alert_message
 
-def create_stop_event_if_needed(machine_number: int, danger_score: float) -> bool:
+def create_stop_event_if_needed(machine_number: int, danger_score: float) -> AlertEvent | None:
   """
     설비가 STOP 상태에 진입했을 때,
     진행 중인 STOP 이벤트가 없으면 AlertEvent를 생성한다.
 
     Returns:
-      bool: 이벤트가 새로 생성되었으면 True, 아니면 False
+      AlertEvent | None: 새로 생성된 이벤트 객체, 생성되지 않으면 None
   """
 
   # 이미 진행 중인 STOP 이벤트가 있는지 확인 (중복 방지)
@@ -24,7 +24,7 @@ def create_stop_event_if_needed(machine_number: int, danger_score: float) -> boo
             )
   
   if ongoing:
-    return False # 이미 STOP 이벤트 진행 중
+    return None # 이미 STOP 이벤트 진행 중
 
   # 마지막 센서 로그 가져오기 (긴급 시점 스냅샷)
   last_log = (
@@ -35,7 +35,7 @@ def create_stop_event_if_needed(machine_number: int, danger_score: float) -> boo
   )
 
   if not last_log:
-    return False # 센서 로그가 없으면 이벤트 생성 불가
+    return None # 센서 로그가 없으면 이벤트 생성 불가
   
   # 어떤 센서가 주 원인인지 선택
   sensor_name, value, limit = pick_main_sensor(last_log)
@@ -61,5 +61,5 @@ def create_stop_event_if_needed(machine_number: int, danger_score: float) -> boo
   db.session.add(event)
   db.session.commit()
 
-  return True
+  return event
 
