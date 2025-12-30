@@ -93,7 +93,7 @@ def predictData(machine_number):
   db.session.commit()
 
 #최근 10분간의 위험점수 불러오기
-@db.get('/load_score/<machine_number>')
+@bp.get('/load_score/<machine_number>')
 def load_score(machine_number):
   global DATA_COUNT
   last_10_scores = DangerScore.query.filter_by(machine_number=machine_number).order_by(desc(DangerScore.id)).limit(DATA_COUNT).all()
