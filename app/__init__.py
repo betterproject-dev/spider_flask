@@ -1,7 +1,7 @@
 import os
 from flask import Flask
 from .config import config
-from .extensions import db, migrate, cors
+from .extensions import db, migrate, cors, socketio
 from .mqtt import init_mqtt
 
 def create_app():
@@ -16,6 +16,9 @@ def create_app():
 
   # 로그인/쿠키 없으면 supports_credentials=True 굳이 필요 없음
   cors.init_app(app, origins=app.config["CORS_ORIGINS"])
+  
+  # === [중요] SocketIO 초기화 추가 ===
+  socketio.init_app(app, cors_allowed_origins=app.config["CORS_ORIGINS"])
   
   from .blueprints.sensormodel import bp as sensormodel_bp
 
