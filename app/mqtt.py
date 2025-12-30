@@ -41,12 +41,23 @@ def on_message(client, userdata, msg):
 
     try:
         data = json.loads(msg.payload.decode())
+        # print("Parsed JSON:", data)
         current_time = time.time()  # 현재 시간
-        print("Parsed JSON:", data)
+
+        # 실시간 차트용
+        display_time = time.strftime('%H:%M:%S', time.localtime(current_time))
+        # 소켓 전송
+        socketio.emit("sensor_data", {
+          'temperature' : data.get("temperature"), # 공장 온도 (온습도 센서)
+          'temperature_DS18B20' : data.get("temperature_DS18B20"), # 기계 온도 (부착형 온도센서)
+          'humidity' : data.get("humidity"),
+          'noise' : data.get("noise"),
+          'leak' : data.get("leak"),
+          'timestamp' : display_time
+        })
 
         # 마지막 저장 후 60초가 지나지 않았으면 리턴 (저장x)
         if current_time - last_save_time < 60:
-          # 소켓 코드
           return
 
         # 60초가 지났으면 저장o
@@ -86,15 +97,6 @@ def on_message(client, userdata, msg):
             last_save_time = current_time
 
             predictData(machine_no) #센서 값 저장되면 바로 위험점수 계산하여 db저장합니다.
-
-            socketio.emit("sensor_data", {
-							'temperature' : data.get("temperature"), # 공장 온도 (온습도 센서)
-              'temperature_DS18B20' : sensor.temperature_DS18B20, # 기계 온도 (부착형 온도센서)
-							'humidity' : sensor.humidity,
-							'noise' : sensor.noise,
-							'leak' : sensor.leak,
-              'timestamp' : sensor.created_at.strftime('%H:%M:%S')
-						})
 
     except Exception as e:
         print("MQTT 처리 오류:", e)
