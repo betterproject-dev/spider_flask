@@ -1,27 +1,13 @@
-from sqlalchemy import desc
-from app import db
 from flask import Blueprint, jsonify
-from ..models.sensors import Sensors
-from ..models.dangerScore import DangerScore
-from ..models.alert_event import AlertEvent
-from ..extensions import model, scaler_X, scaler_y
+from sqlalchemy import desc
 from ..utils.send_res import send_res
-import numpy as np
+# 서비스들
+from ..services.ml_service import predict_next_values # data, preded_final 반환
+from ..services.danger_service import score_to_level
+from ..services.alert_service import create_stop_event_if_needed
+from ..services.danger_score_service import load_danger_score, save_danger_score
 
 bp = Blueprint('sensormodel', __name__)
-
-#불러올 칼럼 수
-DATA_COUNT = 10
-
-#필요한 만큼의 데이터 불러오기
-#return [[온도, 습도, 소음],[온도, 습도, 소음].......]
-def get_data(machine_number):
-  global DATA_COUNT
-  last_10_logs = Sensors.query.filter_by(machine_number=machine_number).order_by(desc(Sensors.id)).limit(DATA_COUNT).all()
-  last_10_logs.reverse()
-  log_data = [[log.temperature_DS18B20, log.humidity, log.noise] for log in last_10_logs]
-  
-  return log_data
 
 #위험점수 계산로직 - 테스트해보면서 수치조정필요
 def calculate_danger_score(t_ch, h_ch, n_ch):
@@ -50,54 +36,48 @@ def calculate_danger_score(t_ch, h_ch, n_ch):
 
 #예측 후 저장하기 - app.mqtt.py에서 호출할거임
 def predictData(machine_number):
-  data=get_data(machine_number)
-  input_sequence =[]
-  
-  #첫번째행은 변화율 0
-  row = [data[0][0], data[0][1], data[0][2], 0.0, 0.0, 0.0]
-  input_sequence.append(row)
-  
-  #data에 각각 변화율 추가
-  for i in range(1,DATA_COUNT):
-    curr_data = data[i]
-    prev_data = data[i-1]
-    
-    temp_change_1m = ((curr_data[0]-prev_data[0])/prev_data[0])*100
-    hm_change_1m = ((curr_data[1]-prev_data[1])/prev_data[1])*100
-    noise_change_1m = ((curr_data[2]-prev_data[2])/prev_data[2])*100
-    
-    row = [curr_data[0], curr_data[1], curr_data[2], temp_change_1m, hm_change_1m, noise_change_1m]
-    input_sequence.append(row)
-    
-  #스케일링
-  scaled_data = scaler_X.transform(input_sequence)
-  final_data = np.array([scaled_data])
-  
-  #예측/역스케일링(복원)
-  preded=model.predict(final_data)
-  preded_final = scaler_y.inverse_transform(preded)
+  """
+  ML 예측
+  danger_score 계산
+  status 판정
+  danger_score 저장
+  STOP이면 alert_event 저장(중복방지)
+  """
+
+  # ML 예측
+  data, preded_final = predict_next_values(machine_number)
   
   #위험 점수로 변환
   pred_temp_change = ((preded_final[0][0]-data[9][0])/data[9][0])*100
   pred_hm_change = ((preded_final[0][1]-data[9][1])/data[9][1])*100
   pred_noise_change = ((preded_final[0][2]-data[9][2])/data[9][2])*100
   
-  danger_score = calculate_danger_score(pred_temp_change, pred_hm_change, pred_noise_change)
+  # danger_score 계산
+  danger_score = float(calculate_danger_score(pred_temp_change, pred_hm_change, pred_noise_change))
   print("====================danger_score==================")
   print(preded_final)
   print(danger_score)
   print("====================danger_score==================")
   
-  ds = DangerScore(dangerScore = float(danger_score), machine_number = machine_number)
-  db.session.add(ds)
-  db.session.commit()
+  # status 판정 (서비스)
+  status = score_to_level(danger_score)
+
+  # danger_score 저장 (서비스)
+  save_danger_score(
+    machine_number=machine_number,
+    danger_score=danger_score
+  )
+
+  # STOP이면 알림 이벤트 저장(중복 방지) (서비스)
+  if status == "STOP":
+    create_stop_event_if_needed(
+      machine_number=machine_number,
+      danger_score=danger_score
+    )
 
 #최근 10분간의 위험점수 불러오기
 @bp.get('/load_score/<machine_number>')
 def load_score(machine_number):
-  global DATA_COUNT
-  last_10_scores = DangerScore.query.filter_by(machine_number=machine_number).order_by(desc(DangerScore.id)).limit(DATA_COUNT).all()
-  last_10_scores.reverse()
-  scores = [score.to_dict() for score in last_10_scores]
+  scores = load_danger_score(machine_number)
   
   return send_res(scores, True, '', 200)
