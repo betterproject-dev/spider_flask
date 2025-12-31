@@ -39,7 +39,7 @@ def on_message(client, userdata, msg):
 
     try:
         data = json.loads(msg.payload.decode())
-        # print("Parsed JSON:", data)
+        print("Parsed JSON:", data)
         current_time = time.time()  # 현재 시간
 
         machine_no = data.get("machine_number")
@@ -91,12 +91,12 @@ def on_message(client, userdata, msg):
                 leak=leak
             )
 
-            # db.session.add(sensor)
-            # db.session.commit()
+            db.session.add(sensor)
+            db.session.commit()
             # 마지막 저장시간 업데이트
             last_save_time = current_time
 
-            # predictData(machine_no) #센서 값 저장되면 바로 위험점수 계산하여 db저장합니다.
+            predictData(machine_no) #센서 값 저장되면 바로 위험점수 계산하여 db저장합니다.
 
     except Exception as e:
         print("MQTT 처리 오류:", e)
