@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, Response, current_app
+from flask import Blueprint, Response
 import numpy as np
 import cv2
 import time
@@ -6,6 +6,8 @@ from ultralytics import YOLO
 import os
 from app.models.defects import Defects
 from app.extensions import db
+import requests
+import threading
 
 bp = Blueprint('camera', __name__)
 base_path = os.getcwd()
@@ -13,115 +15,103 @@ model_path = os.path.join(base_path, 'app', 'models', 'best.pt')
 
 model = YOLO(model_path)
 
-# ---------- 직접 이미지 전송시 필요(postman) ------------
-@bp.route('/predict', methods=['POST'])
-def predict():
-  if 'image' not in request.files:
-    return jsonify({'error': 'No image uploaded'}), 400
+shared_frame = None
+is_object_detected = False # 무게센서가 참고할 변수
+saved_object_ids = set() # 이미 DB 저장 완료된 물체 ID 목록 (메모리 관리 필요)
+
+def detection_loop(app):
+  global shared_frame, is_object_detected, saved_object_ids
   
-  file = request.files['image']
-
-  # 이미지를 메모리에서 읽기
-  img_array = np.frombuffer(file.read(), np.uint8)
-  img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-
-  # 로컬 모델로 추론 실행
-  results = model(img, conf=0.4)
-
-  predictions = []
-
-  for r in results:
-    # 인스턴스 세그멘테이션 결과 추출
-    if r.masks is not None:
-      for mask, box in zip(r.masks.xy, r.boxes):
-        predictions.append({
-          "class":model.names[int(box.cls)],
-          "confidence":float(box.conf),
-          "points":[{"x":float(x), "y":float(y)} for x, y in mask]
-        })
-
-  return jsonify({"predictions":predictions})
-#-----------------------------------------------------------
-
-
-def gen_frames(app):
   camera = cv2.VideoCapture(0)
-  last_saved_time = 0 # 마지막 저장 시간 기록
-  save_cooldown = 5 # 저장 간격 (5초)
 
   while True:
     success, frame = camera.read()
-    if not success: break
+    if not success:
+      time.sleep(0.1)
+      continue
 
-    results = model(frame, conf=0.4, verbose=False)
-    # 현재 화면에서 감지된 전체 객체 수 확인
-    total_detected_objects = sum(len(r.boxes) for r in results if r.boxes is not None)
+    result = model.track(frame, persist=True, conf=0.4, verbose=False)
 
-    current_time = time.time()
-    detected_defects = set() # 중복 방지를 위해 set 사용
-    has_label = False # 라벨 클래스 존재 여부    
+    current_detected_ids = []
+    detected_defects = {} # ID별 불량 정보 저장 {id: set(defects)}
 
-    if total_detected_objects > 0:
-      for r in results:
-        if r.masks is not None:
-          for mask, box in zip(r.masks.xy, r.boxes):
-            # 클래스명 가져오기
-            class_name = model.names[int(box.cls)]
-            # 경계선 그리기
-            pts = np.array(mask, np.int32)
-            cv2.polylines(frame, [pts], True, (0, 255, 0), 2)
-            label = f"{class_name} {float(box.conf):.2f}"
-            cv2.putText(frame, label, (int(pts[0][0]), int(pts[0][1])-10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            
-            # DB 저장 로직 (불량 클래스일 경우에만 저장)
+    is_any_real_object = False
 
-            # 불량 판별 로직
-            if class_name == 'Label':
-              has_label = True
-            elif class_name == 'Crushed':
-              detected_defects.add('Crushed')
-            elif class_name == 'Discolored':
-              detected_defects.add('Discolored')
+    for r in result:
+      if r.boxes is not None and r.boxes.id is not None:
+        # 감지된 물체들의 ID와 정보를 추출
+        boxes = r.boxes.xyxy.cpu().numpy()
+        ids = r.boxes.id.cpu().numpy().astype(int)
+        clss = r.boxes.cls.cpu().numpy().astype(int)
+        masks = r.masks.xy if r.masks is not None else [None] * len(ids)
+
+        for mask, box, obj_id, cls_idx in zip(masks, boxes, ids, clss):
+          is_any_real_object = True
+          class_name = model.names[cls_idx]
+          current_detected_ids.append(obj_id)
+
+          # 화면에 ID와 경계 그리기
+          if mask is not None:
+            cv2.putText(frame, f"ID:{obj_id} {class_name}", (int(box[0]), int(box[1])-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+          
+
+          # 아직 저장 안 된 새로운 물체라면 불량 분석
+          if obj_id not in saved_object_ids:
+            if obj_id not in detected_defects:
+              detected_defects[obj_id] = {'has_label':False, 'types':set()}
+
+            if class_name == 'Label': detected_defects[obj_id]['has_label'] = True
+            elif class_name in ['Crushed', 'Discolored']:
+              detected_defects[obj_id]['types'].add(class_name)
             elif class_name == 'Both_Defect':
-              detected_defects.add('Crushed')
-              detected_defects.add('Discolored')
+              detected_defects[obj_id]['types'].update(['Crushed', 'Discolored'])
+    
+    # 카메라에 물체가 있는지 전역 변수 업데이트(무게 센서용)
+    is_object_detected = is_any_real_object
 
-      # 라벨 없음 판별 (물체는 있는데 Label 클래스가 없는 경우)
-      if not has_label:
-        detected_defects.add('Label')
-        cv2.putText(frame, "WARNING: MISSING LABEL", (50, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-      
-      # 3. 다중 불량 DB 저장 (리스트에 담긴 모든 불량을 각각 하나씩 저장)
-      if detected_defects and (current_time - last_saved_time > save_cooldown):
-        with app.app_context():
+    # 새로운 물체 DB 저장 로직
+    if detected_defects:
+      with app.app_context():
+        for obj_id, info in detected_defects.items():
+          # 라벨 검사 추가
+          if not info['has_label']:
+            info['types'].add('Label')
+
+          target_types = list(info['types']) if info['types'] else ['Normal']
+
           try:
-            for d_type in detected_defects:
-              new_defect = Defects(
-                defect_type=d_type,
-                machine_number=1
-              )
+            for d_type in target_types:
+              new_defect = Defects(defect_type=d_type, machine_number=1)
               db.session.add(new_defect)
-                    
-            db.session.commit() # 리스트 내 모든 불량 동시 커밋
-            last_saved_time = current_time
-            print(f"✅ DB 저장 완료: {detected_defects}")
+            db.session.commit()
+            requests.get("http://localhost:8888/api/stats/update/1")
+            saved_object_ids.add(obj_id) # 저장 완료 목록에 추가
+            print(f"[ID:{obj_id}] 저장 완료: {target_types}")
           except Exception as e:
             db.session.rollback()
-            print(f"❌ DB 저장 에러: {e}")
+            print(f"DB 에러: {e}")
 
-    # 화면 송출용 인코디
-    ret, buffer = cv2.imencode('.jpg', frame)
-    if not ret: continue
-    frame = buffer.tobytes()
-
-    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-    # CPU 과부하 방지 (약 30FPS)
+    # 너무 오래된 ID 삭제 (메모리 정리 - 최근 100개만 유지)
+    if len(saved_object_ids) > 100:
+      saved_object_ids = set(list(saved_object_ids)[-50:])
+    
+    shared_frame = frame.copy()
     time.sleep(0.01)
-  
-      
+
+@bp.record
+def start_thread(state):
+  thread = threading.Thread(target=detection_loop, args=(state.app,), daemon=True)
+  thread.start()
+
+
 @bp.route('/video_feed')
 def video_feed():
+  def stream():
+    while True:
+      if shared_frame is not None:
+        ret, buffer = cv2.imencode('.jpg', shared_frame)
+        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+      time.sleep(0.03)
   # 실시간 비디오 스트림 반환
-  return Response(gen_frames(current_app._get_current_object()), mimetype='multipart/x-mixed-replace; boundary=frame')
+  return Response(stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
