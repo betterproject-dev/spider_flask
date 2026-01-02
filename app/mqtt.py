@@ -8,6 +8,7 @@ from .blueprints.sensormodel import predictData
 
 import time
 
+from .blueprints.weight_monitor import process_weight_data
 
 def init_mqtt(app):
     client = mqtt.Client()
@@ -55,6 +56,9 @@ def on_message(client, userdata, msg):
           'leak' : data.get("leak"),
           'timestamp' : display_time
         })
+
+        if "weight" in data:
+            process_weight_data(app, data)
 
         # 마지막 저장 후 60초가 지나지 않았으면 리턴 (저장x)
         if current_time - last_save_time < 60:
