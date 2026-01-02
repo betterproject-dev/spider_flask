@@ -7,8 +7,8 @@ EMERGENCY_TH = 70   # 이 이상이면 설비 작동 중지(STOP)
 WARNING_TH = 40     # 이 이상이면 경고(WARNING)
 
 # 센서별 임계치(실측 센서값 기준으로 어떤 센서가 "주 원인"인지 고를 때 사용)
-TEMP_LIMIT = 60  # 온도
-HUM_LIMIT = 65   # 습도
+TEMP_LIMIT = 45  # 온도
+HUM_LIMIT = 40   # 습도
 NOISE_LIMIT= 70  # 소음
 LEAK_LIMIT= 0    # 누수는 0이면 바로 위험 
 
@@ -40,38 +40,60 @@ def calc_excess(value, limit):
   return round(value - limit, 2)
 
 def pick_main_sensor(log):
-  """센서 로그 1건에서 '긴급 원인'으로 볼 센서(가장 크게 임계치 초과한 항목)를 선택한다."""
+  """
+    센서 로그 1건에서 '주 원인' 센서를 선택한다.
+    - 온도/습도/소음: (현재값 - 임계치) 초과량이 큰 항목
+    - 누수: '진짜 누수일 때만' 후보에 넣고, 매우 큰 가중치로 최우선 처리
+  """
   candidates = [] # (센서명, 현재값, 임계치, 초과여부) 후보 리스트
 
-  # 온도 임계치 초과 여부 후보 등록
-  candidates.append(("온도센서", log.temperature_DS18B20, TEMP_LIMIT, log.temperature_DS18B20 is not None and log.temperature_DS18B20 >= TEMP_LIMIT))
-  # 습도 임계치 초과 여부 후보 등록
-  candidates.append(("습도센서", log.humidity, HUM_LIMIT, log.humidity is not None and log.humidity >= HUM_LIMIT))
-  # 소음 임계치 초과 여부 후보 등록
-  candidates.append(("소음센서", log.noise, NOISE_LIMIT, log.noise is not None and log.noise >= NOISE_LIMIT))
-  # 누수는 감지(log.leak가 truthy)되면 초과로 처리(현재값은 0/1 형태로 통일)
-  candidates.append(("누수센서", int(bool(log.leak)), LEAK_LIMIT, bool(log.leak)))
+  # 온도/습도/소음: 초과량 기반
+  if log.temperature_DS18B20 is not None and log.temperature_DS18B20 >= TEMP_LIMIT:
+    candidates.append(("온도센서", log.temperature_DS18B20, TEMP_LIMIT, log.temperature_DS18B20 - TEMP_LIMIT))
 
-  # 임계치를 넘은(초과여부 True) 후보만 추림
-  over = [c for c in candidates if c[3]]
-  # 어떤 센서도 임계치 초과가 없으면 기본값 반환(점수 기반 STOP 등 케이스 대비)
-  if not over:
-    # 초과가 없으면 그냥 점수 기반(또는 기본값)
-    return ("센서", None, None)
+  if log.humidity is not None and log.humidity >= HUM_LIMIT:
+    candidates.append(("습도센서", log.humidity, HUM_LIMIT, log.humidity - HUM_LIMIT))
+
+  if log.noise is not None and log.noise >= NOISE_LIMIT:
+    candidates.append(("소음센서", log.noise, NOISE_LIMIT, log.noise - NOISE_LIMIT))
+
+  # 누수 (DB 기준: 0이면 누수)
+  if log.leak is False or log.leak == 0:
+    # 누수는 무조건 최우선 (가중치 9999)
+    candidates.append(("누수센서", 0, 0, 9999))
+
+  if not candidates:
+    return ("UNKNOWN", None, None)
   
-  # 초과 정도가 가장 큰 센서를 고르기 위해 (현재값/임계치) 비율로 정렬
-  # ※ 누수는 limit=0이라 분모 0이 될 수 있어 x[2] 체크로 방어함
-  over.sort(key=lambda x: (x[1] / x[2]) if (x[1] is not None and x[2]) else 0, reverse=True)
-
-  # 가장 위험한(정렬 1등) 센서를 결과로 선택
-  name, value, limit, _ = over[0]
-
+  # 초과량(4번째 값) 가장 큰 것 선택
+  candidates.sort(key=lambda x: x[3], reverse=True)
+  name, value, limit, _ = candidates[0]
   return (name, value, limit)
 
 def make_alert_message(machine_no, sensor_name, value, limit):
   """프론트에서 바로 쓸 수 있도록 알림 제목/메시지 문자열을 생성한다."""
+
+  # 점수 기반(원인 센서 특정 불가) 케이스까지 같이 처리
+  if sensor_name in ("센서", "UNKNOWN") or value is None or limit is None:
+    return {
+      "title": f"{machine_no}호기 긴급(점수 기반) 문제 발생",
+      "message": "위험 점수가 기준을 초과했지만, 특정 센서의 임계치 초과는 감지되지 않았습니다."
+    }
+  
+  if sensor_name == "누수센서":
+    return {
+      "title": f"{machine_no}호기 누수 감지",
+      "message": "누수 신호가 감지되어 설비가 즉시 긴급 중지되었습니다."
+    }
   # 초과량(현재값 - 기준값) 계산
   excess = calc_excess(value, limit)
+
+  # excess 계산이 안 되는 경우(데이터 타입/None 등) 방어
+  if excess is None:
+    return {
+      "title": f"{machine_no}호기 {sensor_name} 긴급 문제 발생",
+      "message": f"센서값: {value}, 허용치: {limit} (초과량 계산 불가)"
+    }
 
   # UI 표시용 title/message 구성(필요하면 포맷만 바꾸면 됨)
   return {

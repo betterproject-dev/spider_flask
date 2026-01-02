@@ -67,11 +67,10 @@ def predictData(machine_number):
     danger_score=danger_score
   )
 
-  # STOP이면 알림 이벤트 저장(중복 방지) (서비스)
-  if status == "STOP":
-    create_stop_event_if_needed(
-      machine_number=machine_number,
-      danger_score=danger_score
-    )
+  
+  create_stop_event_if_needed(
+    machine_number=machine_number,
+    danger_score=danger_score
+  )
 
   
