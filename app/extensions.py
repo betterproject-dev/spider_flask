@@ -5,6 +5,7 @@ from flask_cors import CORS
 from keras.models import load_model
 from flask_socketio import SocketIO
 import joblib
+from flask_socketio import SocketIO
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.join(BASE_DIR, 'sensor_lstm_model_v2.keras')
