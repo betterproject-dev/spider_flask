@@ -18,8 +18,8 @@ class Config:
   JSON_AS_ASCII = False
 
   # MQTT
-  MQTT_BROKER = os.getenv("MQTT_BROKER", "127.0.0.1") 
-  MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
+  MQTT_BROKER = "soyeon"
+  MQTT_PORT = 1883
 
   # CORS (프론트 주소)
   CORS_ORIGINS = [o.strip() for o in os.getenv(
