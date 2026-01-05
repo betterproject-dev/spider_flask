@@ -21,6 +21,7 @@ saved_object_ids = set()
 frame_skip_count = 0
 is_object_detected = False
 last_detected_boxes = []  # 이전 프레임의 박스 정보를 저장 (깜빡임 방지)
+last_detection_time = 0  # 탐지된 시간 저장
 
 # [감지 영역(ROI) 설정] 640x480 해상도 기준 중앙 영역
 ROI_X1, ROI_Y1 = 150, 20
@@ -51,7 +52,7 @@ def background_task(app, detected_defects):
                 print(f"❌ DB 에러: {e}")
 
 def detection_loop(app):
-    global shared_frame, saved_object_ids, frame_skip_count, is_object_detected, last_detected_boxes
+    global shared_frame, saved_object_ids, frame_skip_count, is_object_detected, last_detected_boxes, last_detection_time
     
     # 카메라 설정
     camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
@@ -90,6 +91,8 @@ def detection_loop(app):
             temp_is_detected = False
 
             if results[0].boxes.id is not None:
+                is_object_detected = True
+                last_detection_time = time.time() # 탐지된 시간 기록
                 temp_is_detected = True
                 boxes = results[0].boxes.xyxy.cpu().numpy()
                 ids = results[0].boxes.id.cpu().numpy().astype(int)
@@ -122,10 +125,14 @@ def detection_loop(app):
 
                 # 소켓으로 프론트엔드에 실시간 데이터 전송
                 socketio.emit('yolo_result', detected_info_for_socket)
+            if temp_is_detected or (time.time() - last_detection_time < 1.5):
+                # 마지막 탐지 후 1.5초가 지나지 않았다면 감지 상태 유지
+                is_object_detected = True
+            else:
+                is_object_detected = False
             
             # 전역 변수 업데이트
             last_detected_boxes = current_boxes
-            is_object_detected = temp_is_detected
             
             # 비동기 작업 스레드 실행
             if detected_defects:
