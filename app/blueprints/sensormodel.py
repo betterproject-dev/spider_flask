@@ -1,10 +1,11 @@
 from flask import Blueprint, jsonify
+from sqlalchemy import desc
 from ..utils.send_res import send_res
 # 서비스들
 from ..services.ml_service import predict_next_values # data, preded_final 반환
 from ..services.danger_service import score_to_level
 from ..services.alert_service import create_stop_event_if_needed
-from ..services.danger_score_service import save_danger_score
+from ..services.danger_score_service import load_danger_score, save_danger_score
 
 bp = Blueprint('sensormodel', __name__)
 
@@ -33,7 +34,7 @@ def calculate_danger_score(t_ch, h_ch, n_ch):
                   
     return round(final_score, 2)
 
-#예측데이터 저장하기 - app.mqtt.py에서 호출할거임
+#예측 후 저장하기 - app.mqtt.py에서 호출할거임
 def predictData(machine_number):
   """
   ML 예측
@@ -57,7 +58,7 @@ def predictData(machine_number):
   print(preded_final)
   print(danger_score)
   print("====================danger_score==================")
-
+  
   # status 판정 (서비스)
   status = score_to_level(danger_score)
 
@@ -73,4 +74,9 @@ def predictData(machine_number):
     danger_score=danger_score
   )
 
+#최근 10분간의 위험점수 불러오기
+@bp.get('/load_score/<machine_number>')
+def load_score(machine_number):
+  scores = load_danger_score(machine_number)
   
+  return send_res(scores, True, '', 200)

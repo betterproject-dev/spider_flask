@@ -1,3 +1,4 @@
+from sqlalchemy import desc
 from app import db
 from ..models.dangerScore import DangerScore
 
@@ -24,3 +25,10 @@ def save_danger_score(machine_number: int, danger_score: float | None = None) ->
 
   return row
 
+
+def load_danger_score(machine_number):
+  last_10_scores = DangerScore.query.filter_by(machine_number=machine_number).order_by(desc(DangerScore.id)).limit(10).all()
+  last_10_scores.reverse()
+  scores = [score.to_dict() for score in last_10_scores]
+  
+  return scores
