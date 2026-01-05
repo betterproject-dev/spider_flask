@@ -18,8 +18,8 @@ class Config:
   JSON_AS_ASCII = False
 
   # MQTT
-  MQTT_BROKER = "soyeon"
-  MQTT_PORT = 1883
+  MQTT_BROKER = os.getenv("MQTT_BROKER", "127.0.0.1") 
+  MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 
   # CORS (프론트 주소)
   CORS_ORIGINS = [o.strip() for o in os.getenv(
@@ -28,11 +28,15 @@ class Config:
   ).split(",") if o.strip()]
 
 # 개발용 Config
+
+
 class DevelopConfig(Config):
   DEBUG = True # DEBUG = Flask 전체 디버그 모드
   SQLALCHEMY_ECHO = True # 개발에서 쿼리 로그 보고 싶으면 True
 
 # 배포용 Config
+
+
 class ProductConfig(Config):
   DEBUG = False
   SQLALCHEMY_ECHO = False # 배포에서느 보통 False 권장
