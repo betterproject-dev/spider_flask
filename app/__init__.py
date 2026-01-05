@@ -15,11 +15,12 @@ def create_app():
 
   db.init_app(app)
   migrate.init_app(app, db)
-  socketio.init_app(app, cors_allowed_origins="*")
+  socketio.init_app(app, cors_allowed_origins="*", async_mode="threading")
 
-  # 로그인/쿠키 없으면 supports_credentials=True 굳이 필요 없음
-  cors.init_app(app, origins=app.config["CORS_ORIGINS"])
+  cors.init_app(app, resources={r"/*": {"origins": "*"}})
   
+  from .blueprints.sensormodel import bp as sensormodel_bp
+
   app.mqtt_client = init_mqtt(app)
   
   # === blueprints ===
