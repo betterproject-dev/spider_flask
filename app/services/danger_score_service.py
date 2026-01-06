@@ -13,16 +13,17 @@ def save_danger_score(machine_number: int, danger_score: float | None = None) ->
     Returns:
       DangerScore: 저장된 ORM 객체
   """
+  try:
+    # 모델 필드명에 맞춰 넣어야 함
+    row = DangerScore(
+      machine_number=machine_number,
+      dangerScore = float(danger_score)
+    )
 
-  # 모델 필드명에 맞춰 넣어야 함
-  row = DangerScore(
-    machine_number=machine_number,
-    dangerScore = float(danger_score)
-  )
-
-  db.session.add(row)
-  db.session.commit()
-
+    db.session.add(row)
+    db.session.commit()
+  except Exception as e:
+    print('위험점수 저장 에러:danger_score_service.py')
   return row
 
 
