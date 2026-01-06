@@ -7,6 +7,10 @@ from flask import Blueprint, Response
 from ultralytics import YOLO
 from app.extensions import socketio, db
 from app.models.defects import Defects
+import logging
+
+# 카메라 물체 미감지 로그를 ERROR 레벨 이상만 표시(Warning 무시)
+logging.getLogger("ultralytics").setLevel(logging.ERROR)
 
 bp = Blueprint('camera', __name__)
 
