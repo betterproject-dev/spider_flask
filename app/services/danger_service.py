@@ -3,7 +3,7 @@
 # =========================================
 
 # 위험 점수 기준(ML 예측 기반 danger_score를 상태로 변환할 때 사용)
-EMERGENCY_TH = 70   # 이 이상이면 설비 작동 중지(STOP)
+EMERGENCY_TH = 90   # 이 이상이면 설비 작동 중지(STOP)
 WARNING_TH = 40     # 이 이상이면 경고(WARNING)
 
 # 센서별 임계치(실측 센서값 기준으로 어떤 센서가 "주 원인"인지 고를 때 사용)
@@ -11,6 +11,11 @@ TEMP_LIMIT = 45  # 온도
 HUM_LIMIT = 40   # 습도
 NOISE_LIMIT= 70  # 소음
 LEAK_LIMIT= 0    # 누수는 0이면 바로 위험 
+
+# 오프라인(heartbeat 끊김) 상황에서 "문제" 판정용 더 높은 임계치
+OFFLINE_TEMP_LIMIT = 55
+OFFLINE_HUM_LIMIT = 60
+OFFLINE_NOISE_LIMIT = 85
 
 def score_to_level(score: float) -> str:
   """
@@ -39,26 +44,57 @@ def calc_excess(value, limit):
   # 초과량(현재값 - 기준값)을 소수 2자리로 반환
   return round(value - limit, 2)
 
-def pick_main_sensor(log):
+def is_leak(log) -> bool:
+  """누수 감지 여부(Active LOw)"""
+  return (log is not None) and (log.leak is False or log.leak == 0)
+
+def is_sensor_over_limit(log, *, offline:bool = False) -> bool:
+  """
+  센서값이 임계치를 넘는지 여부
+  - offline=True면 더 높은 임계치로 판단(오탐 줄이기)
+  """
+  if not log:
+    return False
+  
+  if is_leak(log):
+    return True
+  
+  t_lim = OFFLINE_TEMP_LIMIT if offline else TEMP_LIMIT
+  h_lim = OFFLINE_HUM_LIMIT if offline else HUM_LIMIT
+  n_lim = OFFLINE_NOISE_LIMIT if offline else NOISE_LIMIT
+
+  if log.temperature_DS18B20 is not None and log.temperature_DS18B20 >= t_lim:
+    return True
+  if log.humidity is not None and log.humidity >= h_lim:
+    return True
+  if log.noise is not None and log.noise >= n_lim:
+    return True
+  
+  return False
+
+def pick_main_sensor(log, *, offline: bool = False):
   """
     센서 로그 1건에서 '주 원인' 센서를 선택한다.
-    - 온도/습도/소음: (현재값 - 임계치) 초과량이 큰 항목
-    - 누수: '진짜 누수일 때만' 후보에 넣고, 매우 큰 가중치로 최우선 처리
+    -  offline=True면 더 높은 임계치로 후보 선정(오탐 줄이기)
   """
   candidates = [] # (센서명, 현재값, 임계치, 초과여부) 후보 리스트
 
+  t_lim = OFFLINE_TEMP_LIMIT if offline else TEMP_LIMIT
+  h_lim = OFFLINE_HUM_LIMIT if offline else HUM_LIMIT
+  n_lim = OFFLINE_NOISE_LIMIT if offline else NOISE_LIMIT
+
   # 온도/습도/소음: 초과량 기반
-  if log.temperature_DS18B20 is not None and log.temperature_DS18B20 >= TEMP_LIMIT:
-    candidates.append(("온도센서", log.temperature_DS18B20, TEMP_LIMIT, log.temperature_DS18B20 - TEMP_LIMIT))
+  if log.temperature_DS18B20 is not None and log.temperature_DS18B20 >= t_lim:
+    candidates.append(("온도센서", log.temperature_DS18B20, t_lim, log.temperature_DS18B20 - t_lim))
 
-  if log.humidity is not None and log.humidity >= HUM_LIMIT:
-    candidates.append(("습도센서", log.humidity, HUM_LIMIT, log.humidity - HUM_LIMIT))
+  if log.humidity is not None and log.humidity >= h_lim:
+    candidates.append(("습도센서", log.humidity, h_lim, log.humidity - h_lim))
 
-  if log.noise is not None and log.noise >= NOISE_LIMIT:
-    candidates.append(("소음센서", log.noise, NOISE_LIMIT, log.noise - NOISE_LIMIT))
+  if log.noise is not None and log.noise >= n_lim:
+    candidates.append(("소음센서", log.noise, n_lim, log.noise - n_lim))
 
   # 누수 (DB 기준: 0이면 누수)
-  if log.leak is False or log.leak == 0:
+  if is_leak(log):
     # 누수는 무조건 최우선 (가중치 9999)
     candidates.append(("누수센서", 0, 0, 9999))
 
@@ -100,3 +136,36 @@ def make_alert_message(machine_no, sensor_name, value, limit):
     "title" : f"{machine_no}호기 {sensor_name} 긴급 문제 발생",
     "message" : f"센서값: {value}, 허용치 {limit} 기준 {excess} 초과"
   }
+
+def make_offline_alert_message(machine_no, *, reason, sensor_name=None, value=None, limit=None, danger_score=None):
+  """heartbeat 끊김 상황에서 쓰는 메시지 조합기"""
+  # 기본 prefix는 무조건 "통신 두절"
+  title_prefix = f"{machine_no}호기 통신 두절(90초)"
+
+  # 누수
+  if reason == "LEAK":
+    msg = "90초 이상 미수신이며, 마지막 센서 로그에서 누수 신호가 감지되었습니다."
+    if danger_score is not None:
+      msg += f" / 마지막 위험 점수 : {danger_score}"
+    return {
+      "title" : f"{title_prefix} + 누수 의심으로 긴급 중단",
+      "message" : msg
+    }
+  
+  # 센서 임계치 초과
+  if reason == "SENSOR":
+    base = make_alert_message(machine_no, sensor_name, value, limit)
+    msg = base["message"]
+    if danger_score is not None:
+      msg += f" / 마지막 위험 점수: {danger_score}"
+    return {
+      "title" : f"{title_prefix} + 센서 이상으로 긴급 중단",
+      "message" : msg
+    }
+    
+  # 점수 기반
+  return {
+    "title" : f"{title_prefix} + 위첨 점수 이상으로 긴급 중단",
+    "message" : f"90초 이상 미수신이며 마지막 위험 점수가 기준을 초과했습니다. (score={danger_score})"
+  }
+  

@@ -4,7 +4,6 @@ from ..utils.send_res import send_res
 # 서비스들
 from ..services.ml_service import predict_next_values # data, preded_final 반환
 from ..services.danger_service import score_to_level
-from ..services.alert_service import create_stop_event_if_needed
 from ..services.danger_score_service import load_danger_score, save_danger_score
 
 bp = Blueprint('sensormodel', __name__)
@@ -67,12 +66,6 @@ def predictData(machine_number):
 
   # danger_score 저장 (서비스)
   save_danger_score(
-    machine_number=machine_number,
-    danger_score=danger_score
-  )
-
-  
-  create_stop_event_if_needed(
     machine_number=machine_number,
     danger_score=danger_score
   )

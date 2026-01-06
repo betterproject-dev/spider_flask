@@ -5,10 +5,26 @@ from .extensions import db, socketio
 from .models.machines import Machines
 from .models.sensors import Sensors
 from .blueprints.sensormodel import predictData
+import threading
+from .services.offline_alert_service import create_offline_event_if_needed
 
 import time
 
 from .blueprints.weight_monitor import process_weight_data
+
+OFFLINE_CHECK_INTERVAL = 30 
+
+def offline_watch_loop(app):
+    while True:
+        try:
+            with app.app_context():
+                # 지금 1호기만이면 1만
+                create_offline_event_if_needed(1)
+        except Exception as e:
+            print("offline_watch_loop error: ", e)
+
+        time.sleep(OFFLINE_CHECK_INTERVAL)
+
 
 def init_mqtt(app):
     client = mqtt.Client()
@@ -25,6 +41,10 @@ def init_mqtt(app):
         60
     )
     client.loop_start()
+
+    # 여기에서 offline 감시 스레드 시작
+    t = threading.Thread(target=offline_watch_loop, args=(app,), daemon=True)
+    t.start()
 
     return client
 
