@@ -44,8 +44,11 @@ def predictData(machine_number):
   STOP이면 alert_event 저장(중복방지)
   """
 
-  # ML 예측
-  data, preded_final = predict_next_values(machine_number)
+  try:
+    # ML 예측
+    data, preded_final = predict_next_values(machine_number)
+  except Exception as e:
+    print('예측 에러:sensormodel.py')
   
   #위험 점수로 변환
   pred_temp_change = ((preded_final[0][0]-data[9][0])/data[9][0])*100
