@@ -28,8 +28,8 @@ last_detected_boxes = []  # 이전 프레임의 박스 정보를 저장 (깜빡�
 last_detection_time = 0  # 탐지된 시간 저장
 
 # [감지 영역(ROI) 설정] 640x480 해상도 기준 중앙 영역
-ROI_X1, ROI_Y1 = 150, 20
-ROI_X2, ROI_Y2 = 490, 460
+ROI_X1, ROI_Y1 = 150, 30
+ROI_X2, ROI_Y2 = 490, 470
 
 def background_task(app, detected_defects):
     """DB 저장 및 외부 API 호출을 처리하는 비동기 워커"""
@@ -129,32 +129,40 @@ def detection_loop(app):
 
                 # 소켓으로 프론트엔드에 실시간 데이터 전송
                 socketio.emit('yolo_result', detected_info_for_socket)
-            if temp_is_detected or (time.time() - last_detection_time < 1.5):
-                # 마지막 탐지 후 1.5초가 지나지 않았다면 감지 상태 유지
+            else:
+                # 아무것도 감지되지 않았을 때 소켓에 빈 리스트 전송
+                socketio.emit('yolo_result', [])
+            
+            # 감지 상태 유지 로직 (깜빡임 방지용 1초 유예)
+            if temp_is_detected or (time.time() - last_detection_time < 1.0):
                 is_object_detected = True
+                if temp_is_detected:
+                    last_detected_boxes = current_boxes
             else:
                 is_object_detected = False
-            
-            # 전역 변수 업데이트
-            last_detected_boxes = current_boxes
+                last_detected_boxes = [] # 유예 시간이 지나면 박스 정보 완전히 초기화
             
             # 비동기 작업 스레드 실행
             if detected_defects:
                 threading.Thread(target=background_task, args=(app, detected_defects), daemon=True).start()
-
-        # 3. 매 프레임마다 박스 그리기 (분석하지 않는 프레임에서도 last_detected_boxes 사용)
-        for item in last_detected_boxes:
-            box = item['box']
-            # ROI 좌표를 원본 이미지 좌표로 변환
-            x1, y1 = int(box[0] + ROI_X1), int(box[1] + ROI_Y1)
-            x2, y2 = int(box[2] + ROI_X1), int(box[3] + ROI_Y1)
-            
-            # 상태에 따른 색상 (정상: 녹색, 결함: 빨간색)
-            color = (0, 255, 0) if item['class'] == 'Label' or item['class'] == 'Normal' else (0, 0, 255)
-            
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(frame, f"ID:{item['id']} {item['class']}", (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        if not is_object_detected:
+            # 미감지 시 텍스트 표시
+            cv2.putText(frame, "STATUS: OBJECT NOT FOUND", (ROI_X1, ROI_Y1 + 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        else:
+            # 3. 매 프레임마다 박스 그리기 (분석하지 않는 프레임에서도 last_detected_boxes 사용)
+            for item in last_detected_boxes:
+                box = item['box']
+                # ROI 좌표를 원본 이미지 좌표로 변환
+                x1, y1 = int(box[0] + ROI_X1), int(box[1] + ROI_Y1)
+                x2, y2 = int(box[2] + ROI_X1), int(box[3] + ROI_Y1)
+                
+                # 상태에 따른 색상 (정상: 녹색, 결함: 빨간색)
+                color = (0, 255, 0) if item['class'] == 'Label' or item['class'] == 'Normal' else (0, 0, 255)
+                
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(frame, f"ID:{item['id']} {item['class']}", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         # 메모리 정리 (오래된 ID 삭제)
         if len(saved_object_ids) > 100:
@@ -172,6 +180,10 @@ def start_thread(state):
 @bp.route('/video_feed')
 def video_feed():
     def stream():
+        timeout = 0
+        while shared_frame is None and timeout < 50:
+            socketio.sleep(0.1)
+            timeout += 1
         while True:
             if shared_frame is not None:
                 # JPEG 인코딩 (품질 80으로 속도 최적화)
