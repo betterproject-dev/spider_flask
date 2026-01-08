@@ -24,11 +24,9 @@ def create_app():
   app.mqtt_client = init_mqtt(app)
   
   # === blueprints ===
-  from .blueprints.test import bp as test_bp # 테스트용(삭제)
   from .blueprints.camera import bp as camera_bp
   from .blueprints.sensormodel import bp as sensormodel_bp
 	
-  app.register_blueprint(test_bp, url_prefix='/test') # 테스트용(삭제)
   app.register_blueprint(camera_bp, url_prefix='/camera')
   app.register_blueprint(sensormodel_bp, url_prefix='/sensormodel')
 
