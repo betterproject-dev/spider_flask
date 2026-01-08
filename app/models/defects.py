@@ -6,5 +6,10 @@ class Defects (db.Model):
 
   id = db.Column(db.Integer, primary_key=True)
   created_at = db.Column(db.DateTime, default=datetime.now)
-  defect_type = db.Column(db.Enum('Normal', 'Label', 'Crushed', 'Discolored', 'weight', name='defect_types')) # 불량 종류
+  Label = db.Column(db.Boolean, default=False)
+  Crushed = db.Column(db.Boolean, default=False)
+  Discolored = db.Column(db.Boolean, default=False)
+  weight = db.Column(db.Boolean, default=False)
+  is_Defect = db.Column(db.Boolean, default=False)
+  image_url = db.Column(db.String(255), nullable=True)
   machine_number = db.Column(db.Integer, db.ForeignKey('machines.id'), nullable=False)
