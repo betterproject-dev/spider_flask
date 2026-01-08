@@ -2,13 +2,10 @@ import os
 import time
 import cv2
 import threading
-import requests
 from flask import Blueprint, Response
 from ultralytics import YOLO
 from app.extensions import socketio, db
-from app.models.defects import Defects
 import logging
-import uuid
 
 # 카메라 물체 미감지 로그를 ERROR 레벨 이상만 표시(Warning 무시)
 logging.getLogger("ultralytics").setLevel(logging.ERROR)

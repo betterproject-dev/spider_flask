@@ -40,8 +40,8 @@ def process_weight_data(app, data):
   weight_val = data.get("weight")
 
   # 무게가 80g미만은 물체가 있든 없든 무시
-  if weight_val >= 1.0:
-    #if not is_on_scale: # 이전 프레임까지 비어있었다면 '새로운 물체'로 인식
+  if weight_val >= 80:
+    if not is_on_scale: # 이전 프레임까지 비어있었다면 '새로운 물체'로 인식
       is_on_scale = True
       # 물체 감지 조건 강화 (카메라 변수 + 시간 직접 체크)
       # 현재 True이거나, 마지막 탐지로부터 2.0초 이내라면 인정
@@ -50,7 +50,7 @@ def process_weight_data(app, data):
 
       if is_valid_detection:
         # 정상 범위 판정
-        is_weight_error = not (1.0 <= weight_val <= 3.0)
+        is_weight_error = not (210 <= weight_val <= 230)
         cam_results = camera.current_camera_defects
         final_is_defect = any(cam_results.values()) or is_weight_error
 
