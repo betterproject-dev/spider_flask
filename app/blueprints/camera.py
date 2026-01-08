@@ -8,6 +8,7 @@ from ultralytics import YOLO
 from app.extensions import socketio, db
 from app.models.defects import Defects
 import logging
+import uuid
 
 # 카메라 물체 미감지 로그를 ERROR 레벨 이상만 표시(Warning 무시)
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
@@ -27,33 +28,28 @@ is_object_detected = False
 last_detected_boxes = []  # 이전 프레임의 박스 정보를 저장 (깜빡임 방지)
 last_detection_time = 0  # 탐지된 시간 저장
 
+current_camera_defects = {
+    'Label': False,
+    'Crushed': False,
+    'Discolored': False
+}
+
+def background_task(app, detected_defects):
+    global current_camera_defects
+    # 카메라 탐지 시 상태 업데이트 (DB 저장은 여기서 하지 않음)
+    for obj_id, info in detected_defects.items():
+        current_camera_defects['Label'] = not info['has_label']
+        current_camera_defects['Crushed'] = 'Crushed' in info['types']
+        current_camera_defects['Discolored'] = 'Discolored' in info['types']
+
+        # 로그 출력 (선택 사항)
+        status = "결함 감지" if any(current_camera_defects.values()) else "정상"
+        print(f"🔍 [ID:{obj_id}] 카메라 스캔 완료: {status}")
+
 # [감지 영역(ROI) 설정] 640x480 해상도 기준 중앙 영역
 ROI_X1, ROI_Y1 = 150, 30
 ROI_X2, ROI_Y2 = 490, 470
 
-def background_task(app, detected_defects):
-    """DB 저장 및 외부 API 호출을 처리하는 비동기 워커"""
-    with app.app_context():
-        for obj_id, info in detected_defects.items():
-            if not info['has_label']:
-                info['types'].add('Label')
-            
-            target_types = list(info['types']) if info['types'] else ['Normal']
-            try:
-                for d_type in target_types:
-                    new_defect = Defects(defect_type=d_type, machine_number=1)
-                    db.session.add(new_defect)
-                db.session.commit()
-                
-                # 통계 서버 업데이트 요청 (8888 포트)
-                try:
-                    requests.get("http://localhost:8888/api/stats/update/1", timeout=0.5)
-                except:
-                    pass
-                print(f"✅ [ID:{obj_id}] 비동기 작업 완료")
-            except Exception as e:
-                db.session.rollback()
-                print(f"❌ DB 에러: {e}")
 
 def detection_loop(app):
     global shared_frame, saved_object_ids, frame_skip_count, is_object_detected, last_detected_boxes, last_detection_time
@@ -191,3 +187,7 @@ def video_feed():
                 yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
             socketio.sleep(0.03) # 약 30FPS 전송
     return Response(stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+def get_current_frame():
+    global shared_frame
+    return shared_frame.copy() if shared_frame is not None else None
