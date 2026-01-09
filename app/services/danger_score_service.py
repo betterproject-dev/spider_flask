@@ -1,6 +1,10 @@
+import logging
 from sqlalchemy import desc
 from app import db
 from ..models.dangerScore import DangerScore
+
+# [로그]
+logger = logging.getLogger(__name__)
 
 def save_danger_score(machine_number: int, danger_score: float | None = None) -> DangerScore:
   """
@@ -23,7 +27,7 @@ def save_danger_score(machine_number: int, danger_score: float | None = None) ->
     db.session.add(row)
     db.session.commit()
   except Exception as e:
-    print('위험점수 저장 에러:danger_score_service.py')
+    logger.error('위험점수 저장 에러가 발생했습니다.')
   return row
 
 

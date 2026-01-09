@@ -6,10 +6,7 @@ import logging
 from ultralytics import YOLO
 from app.extensions import socketio
 
-# 로그 설정
-logging.basicConfig(level=logging.INFO)
-# 카메라 물체 미감지 로그를 ERROR 레벨 이상만 표시(Warning 무시)
-logging.getLogger("ultralytics").setLevel(logging.ERROR)
+# [로그]
 logger = logging.getLogger(__name__)
 
 # [전역 변수 설정]
@@ -56,7 +53,7 @@ def background_task(app, detected_defects):
 
         # 로그 출력 (선택 사항)
         status = "결함 감지" if any(current_camera_defects.values()) else "정상"
-        logger.info(f"🔍 [ID:{obj_id}] 카메라 스캔 완료: {status}")
+        logger.debug(f"🔍 [ID:{obj_id}] 카메라 스캔 완료: {status}")
 
 def detection_loop(app):
     global shared_frame, frame_skip_count, is_object_detected, last_detection_time

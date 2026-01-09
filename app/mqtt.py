@@ -1,16 +1,18 @@
 import json
+import time
+import threading
+import logging
 import paho.mqtt.client as mqtt
 
 from .extensions import db, socketio
 from .models.machines import Machines
 from .models.sensors import Sensors
 from .blueprints.sensormodel import predictData
-import threading
+from .blueprints.weight_monitor import process_weight_data
 from .services.offline_alert_service import create_offline_event_if_needed
 
-import time
-
-from .blueprints.weight_monitor import process_weight_data
+# [로그]
+logger = logging.getLogger(__name__)
 
 OFFLINE_CHECK_INTERVAL = 30 
 
@@ -21,7 +23,7 @@ def offline_watch_loop(app):
                 # 지금 1호기만이면 1만
                 create_offline_event_if_needed(1)
         except Exception as e:
-            print("offline_watch_loop error: ", e)
+            logger.error(f"offline_watch_loop 에러가 발생했습니다: {e}")
 
         time.sleep(OFFLINE_CHECK_INTERVAL)
 
@@ -50,7 +52,7 @@ def init_mqtt(app):
 
 
 def on_connect(client, userdata, flags, rc):
-    print("MQTT connected (code:", rc, ")")
+    logger.info(f"MQTT가 연결되었습니다. (code: {rc})")
     client.subscribe("sensor/#")
 
 # DB 저장 주기 조절하기 위한 시간 저장 변수
@@ -62,12 +64,12 @@ def on_message(client, userdata, msg):
 
     try:
         data = json.loads(msg.payload.decode())
-        print("Parsed JSON:", data)
+        logger.debug(f"RASPI DATA: {data}")
         current_time = time.time()  # 현재 시간
 
         machine_no = data.get("machine_number")
         if machine_no is None:
-            print("⚠️ machine_number 없음")
+            logger.error("⚠️ 라즈베리파이에서 machine_number가 들어오지 않았습니다.")
             return
 
         temp = data.get("temperature") # 공장 온도 (온습도 센서)
@@ -78,7 +80,7 @@ def on_message(client, userdata, msg):
 
         # 필수 센서 중 하나라도 None이면 소켓 전송 & DB 저장 안 함
         if temp_ds is None or humidity is None or noise is None or leak is None:
-            print("⚠️ 센서 값 중 NULL 있음 → 소켓 전송 및 DB 저장 안 함")
+            logger.error("⚠️ 센서 값 중 NULL이 있어 소켓 전송 및 DB 저장을 하지 않았습니다.")
             return
         
         # 실시간 차트용
@@ -117,11 +119,11 @@ def on_message(client, userdata, msg):
                 leak=leak
             )
 
-            db.session.add(sensor)
-            db.session.commit()
+            # db.session.add(sensor)
+            # db.session.commit()
             # 마지막 저장시간 업데이트
             last_save_time = current_time
-            predictData(machine_no) # 센서 값 저장되면 바로 위험점수 계산하여 db저장합니다.
+            # predictData(machine_no) # 센서 값 저장되면 바로 위험점수 계산하여 db저장합니다.
 
     except Exception as e:
-        print("MQTT 처리 오류:", e)
+        logger.error(f"MQTT 처리 중 오류가 발생했습니다: {e}")
