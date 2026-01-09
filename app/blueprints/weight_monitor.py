@@ -5,6 +5,7 @@ import cv2
 import requests
 from app.extensions import db
 from app.models.defects import Defects
+from app.services import camera_service
 
 is_on_scale = False # 현재 센서 위에 물체가 있는지 상태를 저장
 
@@ -31,7 +32,6 @@ def save_defect_image(frame):
 
 def process_weight_data(app, data):
   """무게 데이터를 분석하여 불량 여부를 판단하고 DB에 저장하는 전용 함수"""
-  from . import camera
   global is_on_scale
   
   DETECTION_VALID_DURATION = 15.0 # 카메라 감지 후 무게 센서까지의 유효시간
@@ -45,18 +45,18 @@ def process_weight_data(app, data):
       is_on_scale = True
       # 물체 감지 조건 강화 (카메라 변수 + 시간 직접 체크)
       # 현재 True이거나, 마지막 탐지로부터 2.0초 이내라면 인정
-      time_since_last_detect = time.time() - camera.last_detection_time
-      is_valid_detection = camera.is_object_detected or (time_since_last_detect < DETECTION_VALID_DURATION)
+      time_since_last_detect = time.time() - camera_service.last_detection_time
+      is_valid_detection = camera_service.is_object_detected or (time_since_last_detect < DETECTION_VALID_DURATION)
 
       if is_valid_detection:
         # 정상 범위 판정
         is_weight_error = not (210 <= weight_val <= 230)
-        cam_results = camera.current_camera_defects
+        cam_results = camera_service.current_camera_defects
         final_is_defect = any(cam_results.values()) or is_weight_error
 
         img_url = None
         if final_is_defect:
-          current_frame = camera.get_current_frame()
+          current_frame = camera_service.get_current_frame()
           img_url = save_defect_image(current_frame)
 
         with app.app_context():
@@ -73,7 +73,7 @@ def process_weight_data(app, data):
             db.session.add(new_defect)
             db.session.commit()
             
-            camera.current_camera_defects = {'Label':False, 'Crushed':False, 'Discolored':False}
+            camera_service.reset_camera_defects()
             # Spring 통계 갱신 신호
             try:
               requests.get(f"http://localhost:8888/api/stats/update/{machine_no}", timeout=0.5)
