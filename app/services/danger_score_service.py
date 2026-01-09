@@ -1,3 +1,4 @@
+import logging
 from sqlalchemy import desc
 from app import db
 from ..models.dangerScore import DangerScore

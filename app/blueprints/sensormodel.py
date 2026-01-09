@@ -1,3 +1,4 @@
+import logging
 from flask import Blueprint, jsonify
 from sqlalchemy import desc
 from ..utils.send_res import send_res
@@ -5,6 +6,9 @@ from ..utils.send_res import send_res
 from ..services.ml_service import PredictionService
 from ..services.danger_service import DangerService
 from ..services.danger_score_service import DangerScoreService
+
+# [로그]
+logger = logging.getLogger(__name__)
 
 bp = Blueprint('sensormodel', __name__)
 
@@ -47,7 +51,7 @@ def predictData(machine_number):
     # ML 예측
     data, preded_final = PredictionService.predict_next_values(machine_number)
   except Exception as e:
-    print('예측 에러:sensormodel.py')
+    logger.error('예측 에러가 발생했습니다.')
   
   #위험 점수로 변환
   pred_temp_change = ((preded_final[0][0]-data[9][0])/data[9][0])*100
@@ -56,10 +60,10 @@ def predictData(machine_number):
   
   # danger_score 계산
   danger_score = float(calculate_danger_score(pred_temp_change, pred_hm_change, pred_noise_change))
-  print("====================danger_score==================")
-  print(preded_final)
-  print(danger_score)
-  print("====================danger_score==================")
+  logger.debug("====================danger_score==================")
+  logger.debug(preded_final)
+  logger.debug(danger_score)
+  logger.debug("====================danger_score==================")
   
   # status 판정 (서비스)
   status = DangerService.score_to_level(danger_score)
