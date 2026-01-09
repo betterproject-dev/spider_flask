@@ -1,6 +1,9 @@
 from sqlalchemy import desc
 from app import db
 from ..models.dangerScore import DangerScore
+import logging
+
+logger = logging.getLogger(__name__)
 
 class DangerScoreService:
   @staticmethod
@@ -27,14 +30,18 @@ class DangerScoreService:
       return row
     except Exception as e:
       db.session.rollback()
-      print('위험점수 저장 에러:danger_score_service.py')
+      logger.error(f"[Machine {machine_number}] 위험점수 저장 실패: {e}", exc_info=True)
       return None
 
   @staticmethod
   def load_danger_score(machine_number):
     """특정 설비의 최근 10개 위험 점수를 가져온다."""
-    last_10_scores = DangerScore.query.filter_by(machine_number=machine_number).order_by(desc(DangerScore.id)).limit(10).all()
-    last_10_scores.reverse()
-    scores = [score.to_dict() for score in last_10_scores]
-    
-    return scores
+    try:
+      last_10_scores = DangerScore.query.filter_by(machine_number=machine_number).order_by(desc(DangerScore.id)).limit(10).all()
+      last_10_scores.reverse()
+      scores = [score.to_dict() for score in last_10_scores]
+      
+      return scores
+    except Exception as e:
+      logger.error(f"[Machine {machine_number}] 위험점수 로드 실패: {e}")
+      return []
