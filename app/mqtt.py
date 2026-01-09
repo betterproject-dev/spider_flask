@@ -9,7 +9,7 @@ from .models.machines import Machines
 from .models.sensors import Sensors
 from .blueprints.sensormodel import predictData
 from .blueprints.weight_monitor import process_weight_data
-from .services.offline_alert_service import create_offline_event_if_needed
+from .services.offline_alert_service import AlertEventService
 
 # [로그]
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ def offline_watch_loop(app):
         try:
             with app.app_context():
                 # 지금 1호기만이면 1만
-                create_offline_event_if_needed(1)
+                AlertEventService.create_offline_event_if_needed(1)
         except Exception as e:
             logger.error(f"offline_watch_loop 에러가 발생했습니다: {e}")
 
@@ -69,7 +69,7 @@ def on_message(client, userdata, msg):
 
         machine_no = data.get("machine_number")
         if machine_no is None:
-            logger.error("⚠️ 라즈베리파이에서 machine_number가 들어오지 않았습니다.")
+            logger.warning("⚠️ 라즈베리파이에서 machine_number가 들어오지 않았습니다.")
             return
 
         temp = data.get("temperature") # 공장 온도 (온습도 센서)
@@ -80,7 +80,7 @@ def on_message(client, userdata, msg):
 
         # 필수 센서 중 하나라도 None이면 소켓 전송 & DB 저장 안 함
         if temp_ds is None or humidity is None or noise is None or leak is None:
-            logger.error("⚠️ 센서 값 중 NULL이 있어 소켓 전송 및 DB 저장을 하지 않았습니다.")
+            logger.warning("⚠️ 센서 값 중 NULL이 있어 소켓 전송 및 DB 저장을 하지 않았습니다.")
             return
         
         # 실시간 차트용
@@ -119,11 +119,11 @@ def on_message(client, userdata, msg):
                 leak=leak
             )
 
-            # db.session.add(sensor)
-            # db.session.commit()
+            db.session.add(sensor)
+            db.session.commit()
             # 마지막 저장시간 업데이트
             last_save_time = current_time
-            # predictData(machine_no) # 센서 값 저장되면 바로 위험점수 계산하여 db저장합니다.
+            predictData(machine_no) # 센서 값 저장되면 바로 위험점수 계산하여 db저장합니다.
 
     except Exception as e:
         logger.error(f"MQTT 처리 중 오류가 발생했습니다: {e}")
