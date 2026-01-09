@@ -18,6 +18,7 @@ def process_weight_data(app, data):
   # 무게가 80g미만은 물체가 있든 없든 무시
   if weight_val >= 80:
     if not is_on_scale: # 이전 프레임까지 비어있었다면 '새로운 물체'로 인식
+      buffered_frame = CameraService.get_current_frame()
       is_on_scale = True
       logger.debug(f"[Machine {machine_no}] 새로운 물체 감지 (무게: {weight_val}g)")
       # 물체 감지 조건 강화 (카메라 변수 + 시간 직접 체크)
@@ -32,7 +33,7 @@ def process_weight_data(app, data):
               machine_no=machine_no,
               weight_val=weight_val,
               cam_results=CameraService.current_camera_defects,
-              frame=CameraService.get_current_frame()
+              frame=buffered_frame
             )
             # 초기화
             CameraService.reset_camera_defects()
