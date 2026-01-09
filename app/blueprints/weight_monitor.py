@@ -1,6 +1,6 @@
 import time
 import logging
-from app.services import camera_service
+from app.services.camera_service import CameraService
 from app.services.defect_service import DefectService
 
 is_on_scale = False # 현재 센서 위에 물체가 있는지 상태를 저장
@@ -22,8 +22,8 @@ def process_weight_data(app, data):
       logger.debug(f"[Machine {machine_no}] 새로운 물체 감지 (무게: {weight_val}g)")
       # 물체 감지 조건 강화 (카메라 변수 + 시간 직접 체크)
       # 현재 True이거나, 마지막 탐지로부터 2.0초 이내라면 인정
-      time_since_last_detect = time.time() - camera_service.last_detection_time
-      is_valid_detection = camera_service.is_object_detected or (time_since_last_detect < DETECTION_VALID_DURATION)
+      time_since_last_detect = time.time() - CameraService.last_detection_time
+      is_valid_detection = CameraService.is_object_detected or (time_since_last_detect < DETECTION_VALID_DURATION)
 
       if is_valid_detection:
         with app.app_context():
@@ -31,11 +31,12 @@ def process_weight_data(app, data):
             DefectService.check_and_save_defect(
               machine_no=machine_no,
               weight_val=weight_val,
-              cam_results=camera_service.current_camera_defects,
-              frame=camera_service.get_current_frame()
+              cam_results=CameraService.current_camera_defects,
+              frame=CameraService.get_current_frame()
             )
             # 초기화
-            camera_service.current_camera_defects = {'Label':False, 'Crushed':False, 'Discolored':False}
+            CameraService.reset_camera_defects()
+            logger.info(f"[Machine {machine_no}] 데이터 저장 및 카메라 상태 초기화 완료")
           except Exception :
             # 서비스 내부에서 이미 로깅함
             pass
