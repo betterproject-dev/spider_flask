@@ -2,9 +2,9 @@ from flask import Blueprint, jsonify
 from sqlalchemy import desc
 from ..utils.send_res import send_res
 # 서비스들
-from ..services.ml_service import predict_next_values # data, preded_final 반환
-from ..services.danger_service import score_to_level
-from ..services.danger_score_service import load_danger_score, save_danger_score
+from ..services.ml_service import PredictionService
+from ..services.danger_service import DangerService
+from ..services.danger_score_service import DangerScoreService
 
 bp = Blueprint('sensormodel', __name__)
 
@@ -45,7 +45,7 @@ def predictData(machine_number):
 
   try:
     # ML 예측
-    data, preded_final = predict_next_values(machine_number)
+    data, preded_final = PredictionService.predict_next_values(machine_number)
   except Exception as e:
     print('예측 에러:sensormodel.py')
   
@@ -62,10 +62,10 @@ def predictData(machine_number):
   print("====================danger_score==================")
   
   # status 판정 (서비스)
-  status = score_to_level(danger_score)
+  status = DangerService.score_to_level(danger_score)
 
   # danger_score 저장 (서비스)
-  save_danger_score(
+  DangerScoreService.save_danger_score(
     machine_number=machine_number,
     danger_score=danger_score
   )
@@ -73,6 +73,6 @@ def predictData(machine_number):
 #최근 10분간의 위험점수 불러오기
 @bp.get('/load_score/<machine_number>')
 def load_score(machine_number):
-  scores = load_danger_score(machine_number)
+  scores = DangerScoreService.load_danger_score(machine_number)
   
   return send_res(scores, True, '', 200)

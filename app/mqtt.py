@@ -6,7 +6,7 @@ from .models.machines import Machines
 from .models.sensors import Sensors
 from .blueprints.sensormodel import predictData
 import threading
-from .services.offline_alert_service import create_offline_event_if_needed
+from .services.offline_alert_service import AlertEventService
 
 import time
 
@@ -19,7 +19,7 @@ def offline_watch_loop(app):
         try:
             with app.app_context():
                 # 지금 1호기만이면 1만
-                create_offline_event_if_needed(1)
+                AlertEventService.create_offline_event_if_needed(1)
         except Exception as e:
             print("offline_watch_loop error: ", e)
 
