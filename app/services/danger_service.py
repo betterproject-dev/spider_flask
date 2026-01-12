@@ -5,7 +5,7 @@
 class DangerService:
   # 상수 정의
   # 위험 점수 기준(ML 예측 기반 danger_score를 상태로 변환할 때 사용)
-  EMERGENCY_TH = 90   # 이 이상이면 설비 작동 중지(STOP)
+  EMERGENCY_TH = 70   # 이 이상이면 설비 작동 중지(STOP)
   WARNING_TH = 40     # 이 이상이면 경고(WARNING)
 
   # 센서별 임계치(실측 센서값 기준으로 어떤 센서가 "주 원인"인지 고를 때 사용)
@@ -144,18 +144,41 @@ class DangerService:
       "title" : f"{machine_no}호기 {sensor_name} 긴급 문제 발생",
       "message" : f"센서값: {value}, 허용치 {limit} 기준 {excess} 초과"
     }
+  
+  @staticmethod
+  def _format_elapsed(seconds: int | float | None) -> str:
+    """초를 '3분 12초' 같은 표시용 문자열로 변환"""
+    if seconds is None:
+      return "알 수 없음"
+    try:
+      s = int(seconds)
+    except Exception:
+      return "알 수 없음"
+    
+    if s < 60:
+      return f"{s}초"
+    m, sec = divmod(s, 60)
+    if m < 60:
+      return f"{m}분 {sec}초"
+    h, rem = divmod(m, 60)
+    return f"{h}시간 {rem}분"
 
   @staticmethod
-  def make_offline_alert_message(machine_no, *, reason, sensor_name=None, value=None, limit=None, danger_score=None):
-    """heartbeat 끊김 상황에서 쓰는 메시지 조합기"""
+  def make_offline_alert_message(machine_no, *, reason, sensor_name=None, value=None, limit=None, danger_score=None, offline_seconds=None, heartbeat_timeout=90):
+    """
+    heartbeat 끊김 상황에서 쓰는 메시지 조합기
+    - offline_seconds: 마지막 통신 이후 경과 시간(초)
+    """
     # 기본 prefix는 무조건 "통신 두절"
-    title_prefix = f"{machine_no}호기 통신 두절(90초)"
+    elapsed_txt = DangerService._format_elapsed(offline_seconds)
+    title_prefix = f"{machine_no}호기 통신 두절(미수신 {elapsed_txt})"
 
     # 누수
     if reason == "LEAK":
-      msg = "90초 이상 미수신이며, 마지막 센서 로그에서 누수 신호가 감지되었습니다."
+      msg = f"{elapsed_txt} 이상 미수신이며, 마지막 센서 로그에서 누수 신호가 감지되었습니다."
+      # 누수는 점수와 무관하게 긴급이라서 보통 score는 '참고'로만
       if danger_score is not None:
-        msg += f" / 마지막 위험 점수 : {danger_score}"
+        msg += f" (참고: 마지막 위험 점수 : {danger_score})"
       return {
         "title" : f"{title_prefix} + 누수 의심으로 긴급 중단",
         "message" : msg
@@ -164,9 +187,9 @@ class DangerService:
     # 센서 임계치 초과
     if reason == "SENSOR":
       base = DangerService.make_alert_message(machine_no, sensor_name, value, limit)
-      msg = base["message"]
+      msg = f"{elapsed_txt} 이상 미수신이며, 마지막 센서 로그에서 임계치 초과가 감지되었습니다. / {base['message']}"
       if danger_score is not None:
-        msg += f" / 마지막 위험 점수: {danger_score}"
+        msg += f" (참고: 마지막 위험 점수 {danger_score})"
       return {
         "title" : f"{title_prefix} + 센서 이상으로 긴급 중단",
         "message" : msg
@@ -175,6 +198,6 @@ class DangerService:
     # 점수 기반
     return {
       "title" : f"{title_prefix} + 위첨 점수 이상으로 긴급 중단",
-      "message" : f"90초 이상 미수신이며 마지막 위험 점수가 기준을 초과했습니다. (score={danger_score})"
+      "message" : f"{elapsed_txt} 이상 미수신이며 마지막 위험 점수가 기준을 초과했습니다. (score={danger_score})"
     }
     

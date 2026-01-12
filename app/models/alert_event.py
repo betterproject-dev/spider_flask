@@ -28,6 +28,9 @@ class AlertEvent(db.Model):
   ended_at = db.Column(db.DateTime, nullable=True, index=True) # 정상복귀/관리자 조치 시
   acknowledged_at = db.Column(db.DateTime, nullable=True, index=True) # 모달 '확인' 누른 시점
 
+  # 진행중 EMERGENCY 1개 강제용 키
+  active_key = db.Column(db.String(64), nullable=True, unique=True, index=True)
+
   def to_dict(self):
     return {
       "id" : self.id,
@@ -40,5 +43,6 @@ class AlertEvent(db.Model):
       "snapshot" : self.snapshot,
       "started_at" : self.started_at,
       "ended_at" : self.ended_at,
-      "acknowledged_at" : self.acknowledged_at
+      "acknowledged_at" : self.acknowledged_at,
+      "active_key" : self.active_key
     }
