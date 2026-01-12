@@ -25,20 +25,31 @@ class DefectService:
       Raises:
         Exception: 데이터베이스 저장 작업 중 오류 발생 시 롤백 후 예외 발생
     """
+    label_seen = bool(cam_results.get("Label", False))          # True = 라벨 보임(정상)
+    crushed_seen = bool(cam_results.get("Crushed", False))      # True = 찌그러짐 불량
+    discolored_seen = bool(cam_results.get("Discolored", False))# True = 변색 불량
+
+    label_val = 0 if label_seen else 1
+
+    crushed_val = 1 if crushed_seen else 0
+    discolored_val = 1 if discolored_seen else 0
+
     # 불량 판정 로직 (무게 범위: 210g ~ 230g 외에는 에러)
-    is_weight_error = not (210 <= weight_val <= 230)
-    final_is_defect = any(cam_results.values()) or is_weight_error
+    is_weight_error = 0 if (210 <= weight_val <= 230) else 1
+    final_is_defect = 1 if (label_val or crushed_val or discolored_val or is_weight_error) else 0
 
     # 이미지 저장 처리 (불량인 경우에만 물리 파일로 저장)
     img_url = None
-    if final_is_defect:
+    if final_is_defect == 1 and frame is not None:
       img_url = ImageService.save_defect_image(frame)
+    else:
+      img_url = None
 
     # DB 객체 생성 및 저장
     new_defect = Defects(
-      Label=cam_results.get('Label', False),
-      Crushed=cam_results.get('Crushed', False),
-      Discolored=cam_results.get('Discolored', False),
+      Label=label_val,
+      Crushed=crushed_val,
+      Discolored=discolored_val,
       weight=is_weight_error,
       is_Defect=final_is_defect,
       image_url=img_url,
