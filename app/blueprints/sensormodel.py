@@ -44,35 +44,48 @@ def predictData(machine_number):
   danger_score 계산
   status 판정
   danger_score 저장
-  STOP이면 alert_event 저장(중복방지)
+  STOP(70점↑) 또는 누수 발생 시 alert_event 저장
   """
 
   try:
     # ML 예측
     data, preded_final = PredictionService.predict_next_values(machine_number)
-  except Exception as e:
-    logger.error('예측 에러가 발생했습니다.')
-  
-  #위험 점수로 변환
-  pred_temp_change = ((preded_final[0][0]-data[9][0])/data[9][0])*100
-  pred_hm_change = ((preded_final[0][1]-data[9][1])/data[9][1])*100
-  pred_noise_change = ((preded_final[0][2]-data[9][2])/data[9][2])*100
-  
-  # danger_score 계산
-  danger_score = float(calculate_danger_score(pred_temp_change, pred_hm_change, pred_noise_change))
-  logger.debug("====================danger_score==================")
-  logger.debug(preded_final)
-  logger.debug(danger_score)
-  logger.debug("====================danger_score==================")
-  
-  # status 판정 (서비스)
-  status = DangerService.score_to_level(danger_score)
 
-  # danger_score 저장 (서비스)
-  DangerScoreService.save_danger_score(
-    machine_number=machine_number,
-    danger_score=danger_score
-  )
+    #위험 점수로 변환
+    pred_temp_change = ((preded_final[0][0]-data[9][0])/data[9][0])*100
+    pred_hm_change = ((preded_final[0][1]-data[9][1])/data[9][1])*100
+    pred_noise_change = ((preded_final[0][2]-data[9][2])/data[9][2])*100
+
+    # danger_score 계산
+    danger_score = float(calculate_danger_score(pred_temp_change, pred_hm_change, pred_noise_change))
+    logger.debug("====================danger_score==================")
+    logger.debug(preded_final)
+    logger.debug(danger_score)
+    logger.debug("====================danger_score==================")
+
+    # status 판정 (서비스)
+    status = DangerService.score_to_level(danger_score)
+
+    # danger_score 저장 (서비스)
+    DangerScoreService.save_danger_score(
+      machine_number=machine_number,
+      danger_score=danger_score
+    )
+
+    # 실시간 알림 체크
+    from ..models.sensors import Sensors
+    from ..services.offline_alert_service import AlertEventService
+
+    # 방금 저장된 가장 최근 로그 가져오기
+    last_log = Sensors.query.filter_by(machine_number=machine_number).order_by(desc(Sensors.id)).first()
+    if last_log:
+      # create_realtime_event_if_needed 내부에서 70점(EMERGENCY_TH) 및 누수 여부를 판단합니다.
+      AlertEventService.create_realtime_event_if_needed(machine_number, last_log, danger_score)
+    
+  except Exception as e:
+    logger.error(f"예측 및 알림 생성 중 에러: {e}", exc_info=True)
+  
+  
 
 #최근 10분간의 위험점수 불러오기
 @bp.get('/load_score/<machine_number>')
