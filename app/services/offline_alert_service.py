@@ -126,7 +126,7 @@ class AlertEventService:
     # 1) 진행중 EMERGENCY가 있으면 snapshot에 reason 누적 후 반환
     ongoing = (
       AlertEvent.query
-        .filter_by(AlertEvent.active_key == active_key)
+        .filter(AlertEvent.active_key == active_key)
         .filter(AlertEvent.ended_at.is_(None))
         .order_by(desc(AlertEvent.started_at))
         .first()
