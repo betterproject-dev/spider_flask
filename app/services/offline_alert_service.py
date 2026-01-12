@@ -2,6 +2,7 @@ from sqlalchemy import desc
 from datetime import datetime, timedelta
 from app import db
 import json
+from sqlalchemy.exc import IntegrityError
 
 from ..models.alert_event import AlertEvent
 from ..models.sensors import Sensors
@@ -13,6 +14,10 @@ class AlertEventService:
   HEARTBEAT_TIMEOUT = 90
   RECENT_WINDOW = 180 # 센서 로그가 최근 3분 이내일 때만 "문제 판정"에 사용
 
+  @staticmethod
+  def _active_key_for(machine_number: int) -> str:
+    return f"EMERGENCY:{machine_number}"
+  
   @staticmethod
   def _get_last_score(machine_number: int) -> float | None:
     """
@@ -40,18 +45,24 @@ class AlertEventService:
   @staticmethod
   def _append_reason_to_event_snapshot(event: AlertEvent, reason_code: str, payload: dict | None = None) -> AlertEvent | None:
     """
-    진행중 이벤트의 snapshot(JSON)에 reason_code를 누적한다.
-      - snapshot이 비어있거나 깨져 있어도 복구
-      - reasons는 배열로 유지
-      - danger_score는 항상 최대값 유지
-      - payload의 None 값은 덮어쓰지 않음
+    - JSON 컬럼(dict) / 문자열(JSON) 둘 다 안전하게 처리
+    - reasons 배열 유지
+    - danger_score는 최대값 유지
+    - payload의 None은 덮어쓰지 않음
     """
     try:
       snap = {}
+
       if event.snapshot:
-        try:
-          snap = json.loads(event.snapshot)
-        except Exception:
+        # JSON 컬럼이면 dict일 수 있음
+        if isinstance(event.snapshot, dict):
+          snap = dict(event.snapshot)
+        elif isinstance(event.snapshot, str):
+          try:
+            snap = json.loads(event.snapshot)
+          except Exception:
+            snap = {}
+        else:
           snap = {}
 
       reasons = snap.get("reasons", [])
@@ -60,15 +71,13 @@ class AlertEventService:
 
       if reason_code not in reasons:
         reasons.append(reason_code)
-
       snap["reasons"] = reasons
 
       if payload:
         for k, v in payload.items():
           if v is None:
             continue
-          
-          # danger_score는 최대값 유지
+
           if k == "danger_score":
             old = snap.get("danger_score")
             if isinstance(old, (int, float)) and isinstance(v, (int, float)):
@@ -78,8 +87,8 @@ class AlertEventService:
           else:
             snap[k] = v
 
-
-      event.snapshot = json.dumps(snap, ensure_ascii=False)
+      # JSON 컬럼이면 dict 그대로 넣어도 됨
+      event.snapshot = snap
       db.session.add(event)
       db.session.commit()
       return event
@@ -112,11 +121,12 @@ class AlertEventService:
 
     # reason 결정 (누수 우선)
     reason_code = "REALTIME_LEAK" if leak_problem else "REALTIME_SCORE"
+    active_key = AlertEventService._active_key_for(machine_number)
 
     # 1) 진행중 EMERGENCY가 있으면 snapshot에 reason 누적 후 반환
     ongoing = (
       AlertEvent.query
-        .filter_by(machine_number=machine_number, level="EMERGENCY")
+        .filter_by(AlertEvent.active_key == active_key)
         .filter(AlertEvent.ended_at.is_(None))
         .order_by(desc(AlertEvent.started_at))
         .first()
@@ -148,19 +158,41 @@ class AlertEventService:
       "created_at": last_log.created_at.isoformat() if getattr(last_log, "created_at", None) else None
     }
 
+    event = AlertEvent(
+      machine_number=machine_number,
+      level="EMERGENCY",
+      danger_score=float(danger_score),
+      title=alert_msg["title"],
+      message=alert_msg["message"],
+      snapshot=snapshot,
+      started_at=now,
+      ended_at=None,
+      active_key=active_key
+    )
+    
     try:
-      event = AlertEvent(
-        machine_number=machine_number,
-        level="EMERGENCY",
-        danger_score=float(danger_score),
-        title=alert_msg["title"],
-        message=alert_msg["message"],
-        snapshot=json.dumps(snapshot, ensure_ascii=False),
-        started_at=now
-      )
       db.session.add(event)
       db.session.commit()
       return event
+    except IntegrityError:
+      # 동시에 다른 스레드가 먼저 생성했음 → 그 이벤트에 누적
+      db.session.rollback()
+      ongoing2 = (
+        AlertEvent.query
+          .filter(AlertEvent.active_key == active_key)
+          .filter(AlertEvent.ended_at.is_(None))
+          .order_by(desc(AlertEvent.started_at))
+          .first()
+      )
+      if not ongoing2:
+        return None
+
+      payload = {
+        "realtime_updated_at": now.isoformat(),
+        "danger_score": float(danger_score),
+        "last_sensor_created_at": last_log.created_at.isoformat() if getattr(last_log, "created_at", None) else None
+      }
+      return AlertEventService._append_reason_to_event_snapshot(ongoing2, reason_code, payload)
     except Exception:
       db.session.rollback()
       return None
@@ -211,41 +243,37 @@ class AlertEventService:
     
     # 마지막 위험 점수 (표시 + 문제판정용)
     last_score = AlertEventService._get_last_score(machine_number)
+    reason_code = "OFFLINE_LEAK" if leak_problem else "OFFLINE_SENSOR"
+    active_key = AlertEventService._active_key_for(machine_number)
     
-    # 진행 중 EMERGENCY가 있으면: 새로 만들지 말고 snapshot에 원인 누적 후 반환
-    ongoing_any = (
+    
+    # 진행중 있으면 누적
+    ongoing = (
       AlertEvent.query
-        .filter_by(machine_number=machine_number, level="EMERGENCY")
+        .filter(AlertEvent.active_key == active_key)
         .filter(AlertEvent.ended_at.is_(None))
         .order_by(desc(AlertEvent.started_at))
         .first()
     )
-
-    reason_code = "OFFLINE_LEAK" if leak_problem else "OFFLINE_SENSOR"
-
-    if ongoing_any:
-      reason_code = "OFFLINE_LEAK" if leak_problem else "OFFLINE_SENSOR"
+    if ongoing:
       payload = {
         "offline_updated_at": now.isoformat(),
         "heartbeat_last_seen": hb.last_seen.isoformat(),
-        "offline_seconds": float(offline_seconds),  # 추가(프론트 표시용)
+        "offline_seconds": float(offline_seconds),
         "danger_score": float(last_score) if last_score is not None else None,
-        "last_sensor_created_at": last_log.created_at.isoformat() if last_log.created_at else None
+        "last_sensor_created_at": last_log.created_at.isoformat()
       }
-      return AlertEventService._append_reason_to_event_snapshot(ongoing_any, reason_code, payload)
-    
-    # 메시지 생성 ( 오프라인 전용 )
-    # - leak 우선
+      return AlertEventService._append_reason_to_event_snapshot(ongoing, reason_code, payload)
+
+    # 메시지 생성
     if leak_problem:
       alert_msg = DangerService.make_offline_alert_message(
         machine_no=machine_number,
         reason="LEAK",
         danger_score=last_score,
-        offline_seconds=offline_seconds,  # 핵심
+        offline_seconds=offline_seconds,
         heartbeat_timeout=AlertEventService.HEARTBEAT_TIMEOUT
       )
-    
-    # - 센서 문제
     else:
       sensor_name, value, limit = DangerService.pick_main_sensor(last_log, offline=True)
       alert_msg = DangerService.make_offline_alert_message(
@@ -255,41 +283,63 @@ class AlertEventService:
         value=value,
         limit=limit,
         danger_score=last_score,
-        offline_seconds=offline_seconds,  # 핵심
+        offline_seconds=offline_seconds,
         heartbeat_timeout=AlertEventService.HEARTBEAT_TIMEOUT
       )
-    
-    # snapshot 구성
+
     snapshot = {
-      "reasons": ["OFFLINE_LEAK" if leak_problem else "OFFLINE_SENSOR"],
-      "heartbeat_last_seen": hb.last_seen.isoformat() if hb.last_seen else None,
-      "offline_seconds": float(offline_seconds),  
-      "offline_updated_at": now.isoformat(),     
+      "reasons": [reason_code],
+      "heartbeat_last_seen": hb.last_seen.isoformat(),
+      "offline_seconds": float(offline_seconds),
+      "offline_updated_at": now.isoformat(),
       "temperature": last_log.temperature_DS18B20,
       "humidity": last_log.humidity,
       "noise": last_log.noise,
       "leak": last_log.leak,
       "danger_score": float(last_score) if last_score is not None else None,
-      "created_at": last_log.created_at.isoformat() if last_log.created_at else None
+      "created_at": last_log.created_at.isoformat()
     }
 
-    # AlertEvent 저장
-    try:
-      event = AlertEvent(
-        machine_number=machine_number,
-        level="EMERGENCY",
-        danger_score=float(last_score) if last_score is not None else None,
-        title=alert_msg["title"],
-        message=alert_msg["message"],
-        snapshot=json.dumps(snapshot, ensure_ascii=False),
-        started_at=now
-      )
+    event = AlertEvent(
+      machine_number=machine_number,
+      level="EMERGENCY",
+      danger_score=float(last_score) if last_score is not None else None,
+      title=alert_msg["title"],
+      message=alert_msg["message"],
+      snapshot=snapshot,
+      started_at=now,
+      ended_at=None,
+      active_key=active_key
+    )
 
+    try:
       db.session.add(event)
       db.session.commit()
       return event
+
+    except IntegrityError:
+      # 여기 없으면 offline도 2개 생김
+      db.session.rollback()
+      ongoing2 = (
+        AlertEvent.query
+          .filter(AlertEvent.active_key == active_key)
+          .filter(AlertEvent.ended_at.is_(None))
+          .order_by(desc(AlertEvent.started_at))
+          .first()
+      )
+      if not ongoing2:
+        return None
+
+      payload = {
+        "offline_updated_at": now.isoformat(),
+        "heartbeat_last_seen": hb.last_seen.isoformat(),
+        "offline_seconds": float(offline_seconds),
+        "danger_score": float(last_score) if last_score is not None else None,
+        "last_sensor_created_at": last_log.created_at.isoformat()
+      }
+      return AlertEventService._append_reason_to_event_snapshot(ongoing2, reason_code, payload)
+
     except Exception:
       db.session.rollback()
       return None
-
 
