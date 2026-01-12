@@ -5,6 +5,7 @@ import threading
 import logging
 from ultralytics import YOLO
 from app.extensions import socketio
+import collections
 
 # [로그]
 logger = logging.getLogger(__name__)
@@ -32,10 +33,29 @@ class CameraService:
   ROI_X1, ROI_Y1 = 150, 30
   ROI_X2, ROI_Y2 = 490, 470
 
+  temp_image_buffer = collections.OrderedDict()
+  MAX_BUFFER_SIZE = 30 # 임시 저장할 최대 이미지 개수
+
+  @classmethod
+  def update_temp_frame(cls, obj_id, frame):
+      "제품 포착시 이미지를 버퍼에 저장 (자동 삭제 포함)"
+      if obj_id not in cls.temp_image_buffer:
+          # 버퍼가 가득 차면 가장 오래된 이미지 삭제
+          if len(cls.temp_image_buffer) >= cls.MAX_BUFFER_SIZE:
+              cls.temp_image_buffer.popitem(last=False)
+          # 현재 프레임을 복사하여 저장
+          cls.temp_image_buffer[obj_id] = (frame.copy(), cls.current_camera_defects.copy())
+          logger.debug(f"[ID:{obj_id}] 버퍼 저장 완료")
+
   @classmethod
   def get_current_frame(cls):
-      """현재 프레임 복사본 반환 (이미지 저장용)"""
-      return cls.shared_frame.copy() if cls.shared_frame is not None else None
+      "가장 최근에 버퍼에 들어온 이미지를 반환하고 제거"
+      if cls.temp_image_buffer:
+          # last=False: 가장 먼저 들어온 사진부터 순서대로 꺼냄 (컨베이어 순서)
+          # last=True: 가장 최근 사진을 꺼냄
+          _, data_set = cls.temp_image_buffer.popitem(last=False)
+          return data_set
+      return None, None
 
   @classmethod
   def reset_camera_defects(cls):
@@ -74,6 +94,8 @@ class CameraService:
           if not success:
               socketio.sleep(0.01)
               continue
+          
+          raw_frame = frame.copy() # 가이드 라인 그리기 전 원본 보관
 
           # 1. 배경 가이드 라인 (감지 영역) 그리기
           cv2.rectangle(frame, (cls.ROI_X1, cls.ROI_Y1), (cls.ROI_X2, cls.ROI_Y2), (0, 255, 255), 2)
@@ -116,6 +138,7 @@ class CameraService:
 
                       # 새로운 객체인 경우 비동기 저장 스케줄링
                       if obj_id not in cls.saved_object_ids:
+                          cls.update_temp_frame(obj_id, raw_frame)
                           if obj_id not in detected_defects:
                               detected_defects[obj_id] = {'has_label': False, 'types': set()}
                           
@@ -142,7 +165,7 @@ class CameraService:
               
               # 비동기 작업 스레드 실행
               if detected_defects:
-                  threading.Thread(target=cls.background_task, args=(app, detected_defects), daemon=True).start()
+                  threading.Thread(target=cls.background_task, args=(app, detected_defects.copy()), daemon=True).start()
           if not cls.is_object_detected:
               # 미감지 시 텍스트 표시
               cv2.putText(frame, "STATUS: OBJECT NOT FOUND", (cls.ROI_X1, cls.ROI_Y1 + 30),
