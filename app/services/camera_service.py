@@ -44,8 +44,8 @@ class CameraService:
           if len(cls.temp_image_buffer) >= cls.MAX_BUFFER_SIZE:
               cls.temp_image_buffer.popitem(last=False)
           # 현재 프레임을 복사하여 저장
-          cls.temp_image_buffer[obj_id] = frame.copy()
-          logger.debug(f"[ID:{obj_id}] 이미지 버퍼 저장 완료 (현재 버퍼: {len(cls.temp_image_buffer)})")
+          cls.temp_image_buffer[obj_id] = (frame.copy(), cls.current_camera_defects.copy())
+          logger.debug(f"[ID:{obj_id}] 버퍼 저장 완료")
 
   @classmethod
   def get_current_frame(cls):
@@ -53,9 +53,9 @@ class CameraService:
       if cls.temp_image_buffer:
           # last=False: 가장 먼저 들어온 사진부터 순서대로 꺼냄 (컨베이어 순서)
           # last=True: 가장 최근 사진을 꺼냄
-          obj_id, frame = cls.temp_image_buffer.popitem(last=False)
-          return frame
-      return None
+          _, data_set = cls.temp_image_buffer.popitem(last=False)
+          return data_set
+      return None, None
 
   @classmethod
   def reset_camera_defects(cls):
@@ -165,7 +165,7 @@ class CameraService:
               
               # 비동기 작업 스레드 실행
               if detected_defects:
-                  threading.Thread(target=cls.background_task, args=(app, detected_defects), daemon=True).start()
+                  threading.Thread(target=cls.background_task, args=(app, detected_defects.copy()), daemon=True).start()
           if not cls.is_object_detected:
               # 미감지 시 텍스트 표시
               cv2.putText(frame, "STATUS: OBJECT NOT FOUND", (cls.ROI_X1, cls.ROI_Y1 + 30),
