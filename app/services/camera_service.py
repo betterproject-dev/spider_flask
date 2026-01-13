@@ -19,7 +19,6 @@ class CameraService:
     frame_skip_count = 0
     is_object_detected = False
 
-    # current_camera_defects는 "감지 여부" (Label=True는 라벨 보임)
     current_camera_defects = {
         "Label": False,
         "Crushed": False,
@@ -48,17 +47,16 @@ class CameraService:
     MAX_BUFFER_SIZE = 200
 
     # =========================
-    # 완료된 물체 큐 (무게센서가 가져감)
+    # 완료된 물체 큐 + 중복 방지
     # =========================
     finished_queue = deque(maxlen=300)
+    _finalized_ids = set()
+    _finalized_lock = threading.Lock()
 
     # ID 마지막으로 보인 시각
     active_last_seen = {}
 
-    # 이 시간 동안 안 보이면 ROI 통과 완료 확정
     FINALIZE_GAP_SECONDS = 0.6
-
-    # 진행중 데이터 TTL
     BUFFER_TTL_SECONDS = 20.0
 
     _lock = threading.Lock()
@@ -83,6 +81,13 @@ class CameraService:
         for obj_id in to_delete:
             cls.temp_image_buffer.pop(obj_id, None)
             cls.active_last_seen.pop(obj_id, None)
+            
+        # finalized_ids도 주기적으로 정리
+        with cls._finalized_lock:
+            if len(cls._finalized_ids) > 100:
+                ids_to_remove = list(cls._finalized_ids)[:50]
+                for oid in ids_to_remove:
+                    cls._finalized_ids.discard(oid)
 
     @classmethod
     def update_temp_frame(cls, obj_id, frame, box, current_defects):
@@ -92,8 +97,8 @@ class CameraService:
         - 가장 좋은 프레임(best_score) 유지
         """
         now = cls._now()
+        center_x = (box[0] + box[2]) / 2
         center_y = (box[1] + box[3]) / 2
-        roi_height = cls.ROI_Y2 - cls.ROI_Y1
 
         with cls._lock:
             if obj_id not in cls.temp_image_buffer:
@@ -115,7 +120,6 @@ class CameraService:
             if current_defects.get("Crushed"): stats["crushed_count"] += 1
             if current_defects.get("Discolored"): stats["discolored_count"] += 1
 
-            center_x = (box[0] + box[2]) / 2
             roi_w = cls.ROI_X2 - cls.ROI_X1
             roi_h = cls.ROI_Y2 - cls.ROI_Y1
 
@@ -126,6 +130,7 @@ class CameraService:
             
             if score > data["best_score"]:
                 data["frame"] = frame.copy()
+                data["best_defects"] = current_defects.copy()
                 data["best_score"] = score
 
             cls._trim_temp_buffer()
@@ -133,62 +138,85 @@ class CameraService:
     @classmethod
     def _finalize_object(cls, obj_id):
         """
-        ROI에서 사라진 obj_id를 "완료"로 확정해서 finished_queue에 넣는다.
+        중복 방지: 같은 obj_id는 한 번만 finalize
         """
+        with cls._finalized_lock:
+            if obj_id in cls._finalized_ids:
+                logger.debug(f"[SKIP] obj_id={obj_id} already finalized")
+                return
+            cls._finalized_ids.add(obj_id)
+        
         with cls._lock:
             data = cls.temp_image_buffer.pop(obj_id, None)
 
-        if not data:
+        if not data or data.get("frame") is None:
             return
+        
+        saved_defects = data.get("best_defects", {})
+        finalized_time = cls._now()
 
-        frame = data.get("frame")
-        stats = data.get("stats", {})
-        total = stats.get("total", 0)
-
-        # ✅ (중요) 너무 적게 찍힌 건 버림 (배경/오탐 방지)
-        if frame is None or total < 3:
-            return
-
-        label_ratio = (stats.get("label_count", 0) / total) if total else 0.0
-
-        # ✅ Label 불량: 라벨이 일정 비율 이하로만 보이면 불량(True)
-        LABEL_RATIO_TH = 0.3
-        label_defect = (label_ratio < LABEL_RATIO_TH)
-
-        # ✅ Crushed/Discolored: 한 번이라도 잡히면 불량(True)
-        crushed_defect = stats.get("crushed_count", 0) > 0
-        discolored_defect = stats.get("discolored_count", 0) > 0
-
-        final_defects = {
-            "Label": label_defect,
-            "Crushed": crushed_defect,
-            "Discolored": discolored_defect
-        }
-
-        # ✅ (중요) finished_queue에 넣어야 무게센서가 get_current_frame()으로 꺼냄
         with cls._lock:
             cls.finished_queue.append({
-                "ts": cls._now(),
-                "frame": frame,
-                "defects": final_defects
+                "ts": finalized_time,  # ⭐ 타임스탬프 저장
+                "obj_id": obj_id,
+                "frame": data["frame"],
+                "defects": saved_defects
             })
-
+            
         logger.info(
-            f"✅ FINALIZED obj_id={obj_id} total={total} "
-            f"label_ratio={label_ratio:.2f} stats={stats} defects={final_defects}"
+            f"[FINALIZED] obj_id={obj_id} -> finished_queue "
+            f"(size={len(cls.finished_queue)})"
         )
+
+    @classmethod
+    def get_realtime_defect_status(cls):
+        with cls._lock:
+            status = {
+                "Label": not cls.current_camera_defects.get("Label", False),
+                "Crushed": cls.current_camera_defects.get("Crushed", False),
+                "Discolored": cls.current_camera_defects.get("Discolored", False)
+            }
+            return status
 
     @classmethod
     def get_current_frame(cls):
         """
-        무게센서가 호출:
-        - finished_queue에서 가장 최근 완료된 물체를 꺼내 반환
+        ⭐ DEPRECATED: timestamp 없는 구버전
+        하위 호환성을 위해 유지
         """
         with cls._lock:
             if not cls.finished_queue:
                 return None, None
+            
             item = cls.finished_queue.pop()
+            logger.info(f"[POP_QUEUE] obj_id={item.get('obj_id')} ts={item.get('ts'):.2f}")
             return item["frame"], item["defects"]
+
+    @classmethod
+    def get_current_frame_with_timestamp(cls):
+        """
+        ⭐ 새로운 API: timestamp도 함께 반환
+        무게센서가 호출: finished_queue에서 가장 최근 완료된 물체를 꺼내 반환
+        
+        Returns:
+            tuple: (frame, defects, timestamp) or (None, None, 0)
+        """
+        with cls._lock:
+            if not cls.finished_queue:
+                return None, None, 0
+            
+            item = cls.finished_queue.pop()
+            logger.info(
+                f"[POP_QUEUE] obj_id={item.get('obj_id')} "
+                f"ts={item.get('ts'):.2f} "
+                f"age={cls._now() - item.get('ts'):.2f}s"
+            )
+            return item["frame"], item["defects"], item["ts"]
+    
+    @classmethod
+    def get_finished_queue_size(cls):
+        with cls._lock:
+            return len(cls.finished_queue)
 
     @classmethod
     def reset_camera_defects(cls):
@@ -202,13 +230,11 @@ class CameraService:
             class_name = item.get("class", "")
             obj_id = item.get("id", "")
 
-            # ROI 좌표 -> 원본(frame) 좌표로 변환
             x1 = int(box[0] + cls.ROI_X1)
             y1 = int(box[1] + cls.ROI_Y1)
             x2 = int(box[2] + cls.ROI_X1)
             y2 = int(box[3] + cls.ROI_Y1)
 
-            # 결함이면 빨강, 정상/라벨이면 초록
             is_defect = class_name in ("Crushed", "Discolored", "Both_Defect")
             color = (0, 0, 255) if is_defect else (0, 255, 0)
 
@@ -246,86 +272,67 @@ class CameraService:
             raw_frame = frame.copy()
             cls.frame_skip_count += 1
 
-            # ROI 가이드
+            # ROI 가이드라인
             cv2.rectangle(frame, (cls.ROI_X1, cls.ROI_Y1), (cls.ROI_X2, cls.ROI_Y2), (0, 255, 255), 2)
-            cv2.putText(frame, "DETECTION ZONE", (cls.ROI_X1, cls.ROI_Y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
             if cls.frame_skip_count % 2 == 0:
                 roi_img = raw_frame[cls.ROI_Y1:cls.ROI_Y2, cls.ROI_X1:cls.ROI_X2]
-                results = cls.model.track(roi_img, persist=True, conf=0.4, verbose=False)
+                results = cls.model.track(roi_img, persist=True, conf=0.5, verbose=False)
 
-                current_boxes = []
-                detected_info_for_socket = []
-
-                if results[0].boxes.id is not None:
-                    cls.last_detection_time = cls._now()
+                if results[0].boxes is not None and results[0].boxes.id is not None:
                     boxes = results[0].boxes.xyxy.cpu().numpy()
                     ids = results[0].boxes.id.cpu().numpy().astype(int)
                     clss = results[0].boxes.cls.cpu().numpy().astype(int)
 
+                    current_boxes = []
                     frame_defects = {"Label": False, "Crushed": False, "Discolored": False}
 
                     for box, obj_id, cls_idx in zip(boxes, ids, clss):
                         obj_id = int(obj_id)
-
-                        # 마지막 seen time 기록
                         cls.active_last_seen[obj_id] = cls._now()
-
                         class_name = cls.model.names[cls_idx]
+                        
                         id_defects = {"Label": False, "Crushed": False, "Discolored": False}
-
-                        if class_name in ("Label", "Normal"):
-                            id_defects["Label"] = True
-                        elif class_name == "Crushed":
-                            id_defects["Crushed"] = True
-                        elif class_name == "Discolored":
-                            id_defects["Discolored"] = True
+                        if class_name in ("Label", "Normal"): id_defects["Label"] = True
+                        elif class_name == "Crushed": id_defects["Crushed"] = True
+                        elif class_name == "Discolored": id_defects["Discolored"] = True
                         elif class_name == "Both_Defect":
                             id_defects["Crushed"] = True
                             id_defects["Discolored"] = True
 
-                        # 누적 업데이트
                         cls.update_temp_frame(obj_id, raw_frame, box, id_defects)
-
+                        
                         frame_defects["Label"] |= id_defects["Label"]
                         frame_defects["Crushed"] |= id_defects["Crushed"]
                         frame_defects["Discolored"] |= id_defects["Discolored"]
-
-                        detected_info_for_socket.append({"id": obj_id, "class": class_name})
                         current_boxes.append({"box": box, "id": obj_id, "class": class_name})
 
-                    # 프레임 단위로 1번만 갱신/전송
                     cls.current_camera_defects = frame_defects
-                    socketio.emit("yolo_result", detected_info_for_socket)
                     cls.last_detected_boxes = current_boxes
+                    cls.last_detection_time = cls._now()
+                    cls.is_object_detected = True
+                    socketio.emit("yolo_result", [{"id": b["id"], "class": b["class"]} for b in current_boxes])
 
                 else:
+                    cls.last_detected_boxes = []
+                    cls.current_camera_defects = {"Label": False, "Crushed": False, "Discolored": False}
+                    cls.is_object_detected = False
                     socketio.emit("yolo_result", [])
 
-                # ✅ 핵심: 감지 유무와 상관없이 "사라진 ID"는 finalize 해야 finished_queue가 채워짐
+                # 사라진 물체 Finalize
                 now = cls._now()
                 to_finalize = [oid for oid, last_seen in list(cls.active_last_seen.items())
                                if (now - last_seen) > cls.FINALIZE_GAP_SECONDS]
-
                 for oid in to_finalize:
                     cls.active_last_seen.pop(oid, None)
                     cls._finalize_object(oid)
 
-                # 박스 표시 (분석 프레임에서도 표시)
-                if cls.last_detected_boxes:
-                    cls._draw_boxes(frame, cls.last_detected_boxes)
-
-                cls.is_object_detected = (results[0].boxes.id is not None) or (cls._now() - cls.last_detection_time < 1.0)
-                if not cls.is_object_detected:
-                    cv2.putText(frame, "STATUS: OBJECT NOT FOUND", (cls.ROI_X1, cls.ROI_Y1 + 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
+            # 화면 그리기
+            if cls.is_object_detected and cls.last_detected_boxes:
+                cls._draw_boxes(frame, cls.last_detected_boxes)
             else:
-                # 분석 안 하는 프레임에서도 마지막 박스 유지(깜빡임 방지)
-                if cls.last_detected_boxes:
-                    cls._draw_boxes(frame, cls.last_detected_boxes)
+                cv2.putText(frame, "STATUS: OBJECT NOT FOUND", (cls.ROI_X1, cls.ROI_Y1 + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-            # 최종 프레임 공유(모니터링용)
             cls.shared_frame = frame.copy()
             socketio.sleep(0.001)
