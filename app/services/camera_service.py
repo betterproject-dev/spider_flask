@@ -3,192 +3,329 @@ import time
 import cv2
 import threading
 import logging
+import collections
+from collections import deque
 from ultralytics import YOLO
 from app.extensions import socketio
-import collections
 
-# [로그]
 logger = logging.getLogger(__name__)
 
 class CameraService:
-  # [전역 변수 설정]
-  shared_frame = None
-  last_detection_time = 0  # 탐지된 시간 저장
-  is_object_detected = False
-  frame_skip_count = 0
-  current_camera_defects = {
-      'Label': False,
-      'Crushed': False,
-      'Discolored': False
-  }
-  saved_object_ids = set()
-  last_detected_boxes = []  # 이전 프레임의 박스 정보를 저장 (깜빡임 방지)
+    # =========================
+    # 전역 상태
+    # =========================
+    shared_frame = None
+    last_detection_time = 0
+    frame_skip_count = 0
+    is_object_detected = False
 
-  # [모델 로드]
-  base_path = os.getcwd()
-  model_path = os.path.join(base_path, 'app', 'models', 'best.pt')
-  model = YOLO(model_path)
+    # current_camera_defects는 "감지 여부" (Label=True는 라벨 보임)
+    current_camera_defects = {
+        "Label": False,
+        "Crushed": False,
+        "Discolored": False
+    }
 
-  # [감지 영역(ROI) 설정] 640x480 해상도 기준 중앙 영역
-  ROI_X1, ROI_Y1 = 150, 30
-  ROI_X2, ROI_Y2 = 490, 470
+    last_detected_boxes = []
 
-  temp_image_buffer = collections.OrderedDict()
-  MAX_BUFFER_SIZE = 30 # 임시 저장할 최대 이미지 개수
+    # =========================
+    # 모델 로드
+    # =========================
+    base_path = os.getcwd()
+    model_path = os.path.join(base_path, "app", "models", "best.pt")
+    model = YOLO(model_path)
 
-  @classmethod
-  def update_temp_frame(cls, obj_id, frame):
-      "제품 포착시 이미지를 버퍼에 저장 (자동 삭제 포함)"
-      if obj_id not in cls.temp_image_buffer:
-          # 버퍼가 가득 차면 가장 오래된 이미지 삭제
-          if len(cls.temp_image_buffer) >= cls.MAX_BUFFER_SIZE:
-              cls.temp_image_buffer.popitem(last=False)
-          # 현재 프레임을 복사하여 저장
-          cls.temp_image_buffer[obj_id] = (frame.copy(), cls.current_camera_defects.copy())
-          logger.debug(f"[ID:{obj_id}] 버퍼 저장 완료")
+    # =========================
+    # ROI
+    # =========================
+    ROI_X1, ROI_Y1 = 150, 30
+    ROI_X2, ROI_Y2 = 490, 470
 
-  @classmethod
-  def get_current_frame(cls):
-      "가장 최근에 버퍼에 들어온 이미지를 반환하고 제거"
-      if cls.temp_image_buffer:
-          # last=False: 가장 먼저 들어온 사진부터 순서대로 꺼냄 (컨베이어 순서)
-          # last=True: 가장 최근 사진을 꺼냄
-          _, data_set = cls.temp_image_buffer.popitem(last=False)
-          return data_set
-      return None, None
+    # =========================
+    # 진행중 누적 버퍼
+    # =========================
+    temp_image_buffer = collections.OrderedDict()
+    MAX_BUFFER_SIZE = 200
 
-  @classmethod
-  def reset_camera_defects(cls):
-      """검사가 끝난 후 상태 초기화"""
-      cls.current_camera_defects = {'Label': False, 'Crushed': False, 'Discolored': False}
+    # =========================
+    # 완료된 물체 큐 (무게센서가 가져감)
+    # =========================
+    finished_queue = deque(maxlen=300)
 
-  @staticmethod
-  def background_task(app, detected_defects):
-      """카메라 탐지 시 상태 업데이트를 수행하는 백그라운드 함수"""
-      for obj_id, info in detected_defects.items():
-          CameraService.current_camera_defects['Label'] = not info['has_label']
-          CameraService.current_camera_defects['Crushed'] = 'Crushed' in info['types']
-          CameraService.current_camera_defects['Discolored'] = 'Discolored' in info['types']
+    # ID 마지막으로 보인 시각
+    active_last_seen = {}
 
-          # 로그 출력 (선택 사항)
-          status = "결함 감지" if any(CameraService.current_camera_defects.values()) else "정상"
-          logger.debug(f"🔍 [ID:{obj_id}] 카메라 스캔 완료: {status}")
+    # 이 시간 동안 안 보이면 ROI 통과 완료 확정
+    FINALIZE_GAP_SECONDS = 0.6
 
-  @classmethod
-  def detection_loop(cls, app):
-      # 카메라 설정
-      camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-      camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-      camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-      camera.set(cv2.CAP_PROP_BUFFERSIZE, 1) # 지연 방지용 버퍼 최소화
+    # 진행중 데이터 TTL
+    BUFFER_TTL_SECONDS = 20.0
 
-      time.sleep(2.0)
-      if not camera.isOpened():
-          logger.error("❌ 카메라를 열 수 없습니다.")
-          return
-      
-      logger.info("🚀 실시간 감지 서비스가 성공적으로 시작되었습니다.")
+    _lock = threading.Lock()
 
-      while True:
-          success, frame = camera.read()
-          if not success:
-              socketio.sleep(0.01)
-              continue
-          
-          raw_frame = frame.copy() # 가이드 라인 그리기 전 원본 보관
+    @classmethod
+    def _now(cls):
+        return time.time()
 
-          # 1. 배경 가이드 라인 (감지 영역) 그리기
-          cv2.rectangle(frame, (cls.ROI_X1, cls.ROI_Y1), (cls.ROI_X2, cls.ROI_Y2), (0, 255, 255), 2)
-          cv2.putText(frame, "DETECTION ZONE", (cls.ROI_X1, cls.ROI_Y1 - 10),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    @classmethod
+    def _trim_temp_buffer(cls):
+        """진행중 버퍼 정리(크기+TTL)"""
+        while len(cls.temp_image_buffer) > cls.MAX_BUFFER_SIZE:
+            cls.temp_image_buffer.popitem(last=False)
 
-          cls.frame_skip_count += 1
-          
-          # 2. YOLO 분석 루프 (2프레임당 1번 실행하여 부하 감소)
-          if cls.frame_skip_count % 2 == 0:
-              roi_img = frame[cls.ROI_Y1:cls.ROI_Y2, cls.ROI_X1:cls.ROI_X2] # 영역 잘라내기
-              results = cls.model.track(roi_img, persist=True, conf=0.4, verbose=False)
+        now = cls._now()
+        to_delete = []
+        for obj_id, data in cls.temp_image_buffer.items():
+            last_seen = data.get("last_seen", 0)
+            if last_seen and (now - last_seen) > cls.BUFFER_TTL_SECONDS:
+                to_delete.append(obj_id)
 
-              current_boxes = []
-              detected_info_for_socket = []
-              detected_defects = {}
-              temp_is_detected = False
+        for obj_id in to_delete:
+            cls.temp_image_buffer.pop(obj_id, None)
+            cls.active_last_seen.pop(obj_id, None)
 
-              if results[0].boxes.id is not None:
-                  cls.is_object_detected = True
-                  cls.last_detection_time = time.time() # 탐지된 시간 기록
-                  temp_is_detected = True
-                  boxes = results[0].boxes.xyxy.cpu().numpy()
-                  ids = results[0].boxes.id.cpu().numpy().astype(int)
-                  clss = results[0].boxes.cls.cpu().numpy().astype(int)
-                  confs = results[0].boxes.conf.cpu().numpy()
+    @classmethod
+    def update_temp_frame(cls, obj_id, frame, box, current_defects):
+        """
+        ROI 안에 있는 동안:
+        - 결함 카운트 누적
+        - 가장 좋은 프레임(best_score) 유지
+        """
+        now = cls._now()
+        center_y = (box[1] + box[3]) / 2
+        roi_height = cls.ROI_Y2 - cls.ROI_Y1
 
-                  for box, obj_id, cls_idx, conf in zip(boxes, ids, clss, confs):
-                      class_name = cls.model.names[cls_idx]
-                      
-                      # 그리기용 정보 저장
-                      current_boxes.append({"box": box, "id": obj_id, "class": class_name})
+        with cls._lock:
+            if obj_id not in cls.temp_image_buffer:
+                cls.temp_image_buffer[obj_id] = {
+                    "frame": frame.copy(),
+                    "stats": {"total": 0, "label_count": 0, "crushed_count": 0, "discolored_count": 0},
+                    "best_score": 0,
+                    "first_seen": now,
+                    "last_seen": now,
+                }
 
-                      # 소켓 전송용 데이터 구성
-                      detected_info_for_socket.append({
-                          "id": int(obj_id), 
-                          "class": class_name, 
-                          "confidence": float(conf)
-                      })
+            data = cls.temp_image_buffer[obj_id]
+            data["last_seen"] = now
 
-                      # 새로운 객체인 경우 비동기 저장 스케줄링
-                      if obj_id not in cls.saved_object_ids:
-                          cls.update_temp_frame(obj_id, raw_frame)
-                          if obj_id not in detected_defects:
-                              detected_defects[obj_id] = {'has_label': False, 'types': set()}
-                          
-                          if class_name == 'Label': detected_defects[obj_id]['has_label'] = True
-                          elif class_name in ['Crushed', 'Discolored']: detected_defects[obj_id]['types'].add(class_name)
-                          elif class_name == 'Both_Defect': detected_defects[obj_id]['types'].update(['Crushed', 'Discolored'])
-                          
-                          cls.saved_object_ids.add(obj_id)
+            stats = data["stats"]
+            stats["total"] += 1
 
-                  # 소켓으로 프론트엔드에 실시간 데이터 전송
-                  socketio.emit('yolo_result', detected_info_for_socket)
-              else:
-                  # 아무것도 감지되지 않았을 때 소켓에 빈 리스트 전송
-                  socketio.emit('yolo_result', [])
-              
-              # 감지 상태 유지 로직 (깜빡임 방지용 1초 유예)
-              if temp_is_detected or (time.time() - cls.last_detection_time < 1.0):
-                  cls.is_object_detected = True
-                  if temp_is_detected:
-                      cls.last_detected_boxes = current_boxes
-              else:
-                  cls.is_object_detected = False
-                  cls.last_detected_boxes = [] # 유예 시간이 지나면 박스 정보 완전히 초기화
-              
-              # 비동기 작업 스레드 실행
-              if detected_defects:
-                  threading.Thread(target=cls.background_task, args=(app, detected_defects.copy()), daemon=True).start()
-          if not cls.is_object_detected:
-              # 미감지 시 텍스트 표시
-              cv2.putText(frame, "STATUS: OBJECT NOT FOUND", (cls.ROI_X1, cls.ROI_Y1 + 30),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-          else:
-              # 3. 매 프레임마다 박스 그리기 (분석하지 않는 프레임에서도 last_detected_boxes 사용)
-              for item in cls.last_detected_boxes:
-                  box = item['box']
-                  # ROI 좌표를 원본 이미지 좌표로 변환
-                  x1, y1 = int(box[0] + cls.ROI_X1), int(box[1] + cls.ROI_Y1)
-                  x2, y2 = int(box[2] + cls.ROI_X1), int(box[3] + cls.ROI_Y1)
-                  
-                  # 상태에 따른 색상 (정상: 녹색, 결함: 빨간색)
-                  color = (0, 255, 0) if item['class'] == 'Label' or item['class'] == 'Normal' else (0, 0, 255)
-                  
-                  cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                  cv2.putText(frame, f"ID:{item['id']} {item['class']}", (x1, y1 - 10),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            if current_defects.get("Label"): stats["label_count"] += 1
+            if current_defects.get("Crushed"): stats["crushed_count"] += 1
+            if current_defects.get("Discolored"): stats["discolored_count"] += 1
 
-          # 메모리 정리 (오래된 ID 삭제)
-          if len(cls.saved_object_ids) > 100:
-              cls.saved_object_ids = set(list(cls.saved_object_ids)[-50:])
+            center_x = (box[0] + box[2]) / 2
+            roi_w = cls.ROI_X2 - cls.ROI_X1
+            roi_h = cls.ROI_Y2 - cls.ROI_Y1
 
-          # 최종 프레임 공유 및 대기
-          cls.shared_frame = frame.copy()
-          socketio.sleep(0.001)
+            dx = abs(center_x - (roi_w / 2))
+            dy = abs(center_y - (roi_h / 2))
+
+            score = 1 / (dx * 2.0 + dy * 1.0 + 1)
+            
+            if score > data["best_score"]:
+                data["frame"] = frame.copy()
+                data["best_score"] = score
+
+            cls._trim_temp_buffer()
+
+    @classmethod
+    def _finalize_object(cls, obj_id):
+        """
+        ROI에서 사라진 obj_id를 "완료"로 확정해서 finished_queue에 넣는다.
+        """
+        with cls._lock:
+            data = cls.temp_image_buffer.pop(obj_id, None)
+
+        if not data:
+            return
+
+        frame = data.get("frame")
+        stats = data.get("stats", {})
+        total = stats.get("total", 0)
+
+        # ✅ (중요) 너무 적게 찍힌 건 버림 (배경/오탐 방지)
+        if frame is None or total < 3:
+            return
+
+        label_ratio = (stats.get("label_count", 0) / total) if total else 0.0
+
+        # ✅ Label 불량: 라벨이 일정 비율 이하로만 보이면 불량(True)
+        LABEL_RATIO_TH = 0.3
+        label_defect = (label_ratio < LABEL_RATIO_TH)
+
+        # ✅ Crushed/Discolored: 한 번이라도 잡히면 불량(True)
+        crushed_defect = stats.get("crushed_count", 0) > 0
+        discolored_defect = stats.get("discolored_count", 0) > 0
+
+        final_defects = {
+            "Label": label_defect,
+            "Crushed": crushed_defect,
+            "Discolored": discolored_defect
+        }
+
+        # ✅ (중요) finished_queue에 넣어야 무게센서가 get_current_frame()으로 꺼냄
+        with cls._lock:
+            cls.finished_queue.append({
+                "ts": cls._now(),
+                "frame": frame,
+                "defects": final_defects
+            })
+
+        logger.info(
+            f"✅ FINALIZED obj_id={obj_id} total={total} "
+            f"label_ratio={label_ratio:.2f} stats={stats} defects={final_defects}"
+        )
+
+    @classmethod
+    def get_current_frame(cls):
+        """
+        무게센서가 호출:
+        - finished_queue에서 가장 최근 완료된 물체를 꺼내 반환
+        """
+        with cls._lock:
+            if not cls.finished_queue:
+                return None, None
+            item = cls.finished_queue.pop()
+            return item["frame"], item["defects"]
+
+    @classmethod
+    def reset_camera_defects(cls):
+        cls.current_camera_defects = {"Label": False, "Crushed": False, "Discolored": False}
+
+    @classmethod
+    def _draw_boxes(cls, frame, boxes_to_draw):
+        """화면에 박스 그리기"""
+        for item in boxes_to_draw:
+            box = item["box"]
+            class_name = item.get("class", "")
+            obj_id = item.get("id", "")
+
+            # ROI 좌표 -> 원본(frame) 좌표로 변환
+            x1 = int(box[0] + cls.ROI_X1)
+            y1 = int(box[1] + cls.ROI_Y1)
+            x2 = int(box[2] + cls.ROI_X1)
+            y2 = int(box[3] + cls.ROI_Y1)
+
+            # 결함이면 빨강, 정상/라벨이면 초록
+            is_defect = class_name in ("Crushed", "Discolored", "Both_Defect")
+            color = (0, 0, 255) if is_defect else (0, 255, 0)
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(
+                frame,
+                f"ID:{obj_id} {class_name}",
+                (x1, max(0, y1 - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                color,
+                2
+            )
+
+    @classmethod
+    def detection_loop(cls, app):
+        camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        time.sleep(2.0)
+        if not camera.isOpened():
+            logger.error("❌ 카메라를 열 수 없습니다.")
+            return
+
+        logger.info("🚀 실시간 감지 서비스 시작")
+
+        while True:
+            success, frame = camera.read()
+            if not success:
+                socketio.sleep(0.01)
+                continue
+
+            raw_frame = frame.copy()
+            cls.frame_skip_count += 1
+
+            # ROI 가이드
+            cv2.rectangle(frame, (cls.ROI_X1, cls.ROI_Y1), (cls.ROI_X2, cls.ROI_Y2), (0, 255, 255), 2)
+            cv2.putText(frame, "DETECTION ZONE", (cls.ROI_X1, cls.ROI_Y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+            if cls.frame_skip_count % 2 == 0:
+                roi_img = raw_frame[cls.ROI_Y1:cls.ROI_Y2, cls.ROI_X1:cls.ROI_X2]
+                results = cls.model.track(roi_img, persist=True, conf=0.4, verbose=False)
+
+                current_boxes = []
+                detected_info_for_socket = []
+
+                if results[0].boxes.id is not None:
+                    cls.last_detection_time = cls._now()
+                    boxes = results[0].boxes.xyxy.cpu().numpy()
+                    ids = results[0].boxes.id.cpu().numpy().astype(int)
+                    clss = results[0].boxes.cls.cpu().numpy().astype(int)
+
+                    frame_defects = {"Label": False, "Crushed": False, "Discolored": False}
+
+                    for box, obj_id, cls_idx in zip(boxes, ids, clss):
+                        obj_id = int(obj_id)
+
+                        # 마지막 seen time 기록
+                        cls.active_last_seen[obj_id] = cls._now()
+
+                        class_name = cls.model.names[cls_idx]
+                        id_defects = {"Label": False, "Crushed": False, "Discolored": False}
+
+                        if class_name in ("Label", "Normal"):
+                            id_defects["Label"] = True
+                        elif class_name == "Crushed":
+                            id_defects["Crushed"] = True
+                        elif class_name == "Discolored":
+                            id_defects["Discolored"] = True
+                        elif class_name == "Both_Defect":
+                            id_defects["Crushed"] = True
+                            id_defects["Discolored"] = True
+
+                        # 누적 업데이트
+                        cls.update_temp_frame(obj_id, raw_frame, box, id_defects)
+
+                        frame_defects["Label"] |= id_defects["Label"]
+                        frame_defects["Crushed"] |= id_defects["Crushed"]
+                        frame_defects["Discolored"] |= id_defects["Discolored"]
+
+                        detected_info_for_socket.append({"id": obj_id, "class": class_name})
+                        current_boxes.append({"box": box, "id": obj_id, "class": class_name})
+
+                    # 프레임 단위로 1번만 갱신/전송
+                    cls.current_camera_defects = frame_defects
+                    socketio.emit("yolo_result", detected_info_for_socket)
+                    cls.last_detected_boxes = current_boxes
+
+                else:
+                    socketio.emit("yolo_result", [])
+
+                # ✅ 핵심: 감지 유무와 상관없이 "사라진 ID"는 finalize 해야 finished_queue가 채워짐
+                now = cls._now()
+                to_finalize = [oid for oid, last_seen in list(cls.active_last_seen.items())
+                               if (now - last_seen) > cls.FINALIZE_GAP_SECONDS]
+
+                for oid in to_finalize:
+                    cls.active_last_seen.pop(oid, None)
+                    cls._finalize_object(oid)
+
+                # 박스 표시 (분석 프레임에서도 표시)
+                if cls.last_detected_boxes:
+                    cls._draw_boxes(frame, cls.last_detected_boxes)
+
+                cls.is_object_detected = (results[0].boxes.id is not None) or (cls._now() - cls.last_detection_time < 1.0)
+                if not cls.is_object_detected:
+                    cv2.putText(frame, "STATUS: OBJECT NOT FOUND", (cls.ROI_X1, cls.ROI_Y1 + 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+            else:
+                # 분석 안 하는 프레임에서도 마지막 박스 유지(깜빡임 방지)
+                if cls.last_detected_boxes:
+                    cls._draw_boxes(frame, cls.last_detected_boxes)
+
+            # 최종 프레임 공유(모니터링용)
+            cls.shared_frame = frame.copy()
+            socketio.sleep(0.001)
