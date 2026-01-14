@@ -121,14 +121,13 @@ def process_weight_data(app, data):
     queue_size = CameraService.get_finished_queue_size()
     logger.info(f"[QUEUE_CHECK] finished_queue size={queue_size}")
     
-    buffered_frame, buffered_defects = _pop_cam_result()
+    buffered_frame, captured_defects = _pop_cam_result()
 
     # ⭐ finished_queue가 비어있으면 실시간 카메라 상태 사용
-    if buffered_frame is None or buffered_defects is None:
-        logger.warning(
-            f"[NO_QUEUE_DATA] m={machine_no} w={weight_val:.2f} "
-            f"-> finished_queue 비어있음, 실시간 카메라 상태 사용"
-        )
+    if buffered_frame is None:
+        final_frame = buffered_frame
+        final_defects = captured_defects
+        logger.info(f"[SAVE] 매칭된 캡처 시점 불량: {final_defects}")
         
         # ⭐ 실시간 카메라에서 물체가 감지되고 있는지 확인
         if CameraService.is_object_detected:
@@ -154,7 +153,7 @@ def process_weight_data(app, data):
     else:
         # finished_queue에서 데이터를 가져온 경우
         final_frame = buffered_frame
-        final_defects = buffered_defects
+        final_defects = captured_defects
 
     logger.info(
         f"[SAVE_WITH_CAMERA] m={machine_no} w={weight_val:.2f} "
