@@ -25,33 +25,29 @@ class DefectService:
       Raises:
         Exception: 데이터베이스 저장 작업 중 오류 발생 시 롤백 후 예외 발생
     """
-    label_seen = bool(cam_results.get("Label", False))          # True = 라벨 보임(정상)
-    crushed_seen = bool(cam_results.get("Crushed", False))      # True = 찌그러짐 불량
-    discolored_seen = bool(cam_results.get("Discolored", False))# True = 변색 불량
-
-    label_val = 0 if label_seen else 1
-
-    crushed_val = 1 if crushed_seen else 0
-    discolored_val = 1 if discolored_seen else 0
+    is_label_ok = bool(cam_results.get("Label", False))          # True = 라벨 보임(정상)
+    is_crushed = bool(cam_results.get("Crushed", False))      # True = 찌그러짐 불량
+    is_discolored = bool(cam_results.get("Discolored", False))# True = 변색 불량
 
     # 불량 판정 로직 (무게 범위: 210g ~ 230g 외에는 에러)
-    is_weight_error = 0 if (210 <= weight_val <= 230) else 1
-    final_is_defect = 1 if (label_val or crushed_val or discolored_val or is_weight_error) else 0
+    is_weight_in_range = (210 <= weight_val <= 230)
+    if (not is_label_ok) or is_crushed or is_discolored or (not is_weight_in_range):
+      final_is_defect = 1 # 불량
+    else:
+      final_is_defect = 0 # 정상
 
     # 이미지 저장 처리 (불량인 경우에만 물리 파일로 저장)
     img_url = None
     if final_is_defect == 1 and frame is not None:
       img_url = ImageService.save_defect_image(frame)
-    else:
-      img_url = None
-
+      
     # DB 객체 생성 및 저장
     new_defect = Defects(
-      Label=label_val,
-      Crushed=crushed_val,
-      Discolored=discolored_val,
-      weight=is_weight_error,
-      is_Defect=final_is_defect,
+      Label=not is_label_ok,
+      Crushed=is_crushed,
+      Discolored=is_discolored,
+      weight=not is_weight_in_range,
+      is_Defect=bool(final_is_defect),
       image_url=img_url,
       machine_number=machine_no
     )
@@ -59,7 +55,7 @@ class DefectService:
     try:
       db.session.add(new_defect)
       db.session.commit()
-      logger.info(f"[Machine {machine_no}] DB 저장 완료 | 불량여부: {final_is_defect} | URL: {img_url}")
+      logger.info(f"[Machine {machine_no}] DB 저장 완료 | ID: {new_defect.id} | 불량: {final_is_defect}")
 
       # 외부 통계 서버 알림
       try:

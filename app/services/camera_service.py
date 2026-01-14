@@ -89,60 +89,61 @@ class CameraService:
                 for oid in ids_to_remove:
                     cls._finalized_ids.discard(oid)
 
+        with cls._lock:
+            while cls.finished_queue:
+                oldest = cls.finished_queue[0]
+                age = now - oldest.get("ts", 0)
+                if age > 15.0:
+                    removed = cls.finished_queue.popleft()
+                    logger.warning(
+                        f"[CLEANUP_OLD] obj_id={removed.get('obj_id')}"
+                        f"age={age:.1f}s -> 오래된 데이터, 제거"
+                    )
+                else:
+                    break
+
     @classmethod
     def update_temp_frame(cls, obj_id, frame, box, current_defects):
-        """
-        ROI 안에 있는 동안:
-        - 결함 카운트 누적
-        - 가장 좋은 프레임(best_score) 유지
-        """
         now = cls._now()
+        roi_w = cls.ROI_X2 - cls.ROI_X1
         center_x = (box[0] + box[2]) / 2
-        center_y = (box[1] + box[3]) / 2
 
         with cls._lock:
             if obj_id not in cls.temp_image_buffer:
                 cls.temp_image_buffer[obj_id] = {
-                    "frame": frame.copy(),
-                    "stats": {"total": 0, "label_count": 0, "crushed_count": 0, "discolored_count": 0},
-                    "best_score": 0,
-                    "first_seen": now,
-                    "last_seen": now,
+                    "frame": frame.copy(), 
+                    "captured_defects": {"Label": False, "Crushed": False, "Discolored": False},
+                    "defect_counts": {"Label": 0, "Crushed": 0, "Discolored": 0}, # ⭐ 카운트 추가
+                    "best_score": -1.0, 
+                    "last_seen": now, 
+                    "passed_center": False
                 }
 
             data = cls.temp_image_buffer[obj_id]
             data["last_seen"] = now
 
-            stats = data["stats"]
-            stats["total"] += 1
+            # 바로 True로 만들지 않고 카운트를 올립니다.
+            for defect_type in ["Label", "Crushed", "Discolored"]:
+                if current_defects.get(defect_type, False):
+                    data["defect_counts"][defect_type] += 1
+                
+                # 최소 20프레임 이상 검출되었을 때만 최종 결함으로 확정 (수치 조정 가능)
+                if data["defect_counts"][defect_type] >= 20:
+                    data["captured_defects"][defect_type] = True
 
-            if current_defects.get("Label"): stats["label_count"] += 1
-            if current_defects.get("Crushed"): stats["crushed_count"] += 1
-            if current_defects.get("Discolored"): stats["discolored_count"] += 1
-
-            roi_w = cls.ROI_X2 - cls.ROI_X1
-            roi_h = cls.ROI_Y2 - cls.ROI_Y1
-
-            dx = abs(center_x - (roi_w / 2))
-            dy = abs(center_y - (roi_h / 2))
-
-            score = 1 / (dx * 2.0 + dy * 1.0 + 1)
-            
+            # 중앙 부근 베스트 샷 저장
+            score = 1 / (abs(center_x - roi_w * 0.5) + 1)
             if score > data["best_score"]:
                 data["frame"] = frame.copy()
-                data["best_defects"] = current_defects.copy()
                 data["best_score"] = score
 
-            cls._trim_temp_buffer()
+            if center_x > roi_w * 0.5:
+                data["passed_center"] = True
 
     @classmethod
     def _finalize_object(cls, obj_id):
-        """
-        중복 방지: 같은 obj_id는 한 번만 finalize
-        """
         with cls._finalized_lock:
             if obj_id in cls._finalized_ids:
-                logger.debug(f"[SKIP] obj_id={obj_id} already finalized")
                 return
             cls._finalized_ids.add(obj_id)
         
@@ -152,31 +153,53 @@ class CameraService:
         if not data or data.get("frame") is None:
             return
         
-        saved_defects = data.get("best_defects", {})
-        finalized_time = cls._now()
+        current_ts = cls._now()
+        final_defects = data.get("captured_defects", {"Label": False, "Crushed": False, "Discolored": False})
 
         with cls._lock:
-            cls.finished_queue.append({
-                "ts": finalized_time,  # ⭐ 타임스탬프 저장
-                "obj_id": obj_id,
-                "frame": data["frame"],
-                "defects": saved_defects
-            })
+            # ⭐ 핵심 로직: 0.5초 이내에 이미 처리된 다른 ID가 있는지 확인
+            merged = False
+            for item in reversed(cls.finished_queue):
+                # 마지막 아이템과 시간 차이가 0.5초 이내라면? (시간은 환경에 맞게 조정 가능)
+                if current_ts - item["ts"] < 0.5: 
+                    # 이전 데이터에 현재 발견된 결함들을 합침 (OR 연산)
+                    item["defects"]["Label"] |= final_defects["Label"]
+                    item["defects"]["Crushed"] |= final_defects["Crushed"]
+                    item["defects"]["Discolored"] |= final_defects["Discolored"]
+                    
+                    logger.info(f"[MERGED] ID:{obj_id} data merged into previous ID:{item['obj_id']}")
+                    merged = True
+                    break
             
-        logger.info(
-            f"[FINALIZED] obj_id={obj_id} -> finished_queue "
-            f"(size={len(cls.finished_queue)})"
-        )
+            # 겹치는 시간이 없으면 새로 추가
+            if not merged:
+                cls.finished_queue.append({
+                    "ts": current_ts,
+                    "obj_id": obj_id,
+                    "frame": data["frame"],
+                    "defects": final_defects
+                })
+                logger.info(f"[FINALIZED] ID:{obj_id} | Label:{final_defects['Label']} | Crushed:{final_defects['Crushed']} | Discolored:{final_defects['Discolored']}")
 
     @classmethod
     def get_realtime_defect_status(cls):
         with cls._lock:
-            status = {
-                "Label": not cls.current_camera_defects.get("Label", False),
-                "Crushed": cls.current_camera_defects.get("Crushed", False),
-                "Discolored": cls.current_camera_defects.get("Discolored", False)
+            # is_label_ok: 라벨이 감지되면 True (정상)
+            is_label_ok = cls.current_camera_defects.get("Label", False)
+            is_crushed = cls.current_camera_defects.get("Crushed", False)
+            is_discolored = cls.current_camera_defects.get("Discolored", False)
+            
+            # 표의 마지막 행: 아무것도 감지되지 않은 경우 (Normal - 아무것도 없음)
+            is_nothing = not (is_label_ok or is_crushed or is_discolored)
+
+            # status 반환 (DefectService와 일치시키기 위해 원본값 위주로 반환)
+            return {
+                "Label": is_label_ok,
+                "Crushed": is_crushed,
+                "Discolored": is_discolored,
+                "is_nothing": is_nothing
             }
-            return status
+
 
     @classmethod
     def get_current_frame(cls):
@@ -277,7 +300,7 @@ class CameraService:
 
             if cls.frame_skip_count % 2 == 0:
                 roi_img = raw_frame[cls.ROI_Y1:cls.ROI_Y2, cls.ROI_X1:cls.ROI_X2]
-                results = cls.model.track(roi_img, persist=True, conf=0.5, verbose=False)
+                results = cls.model.track(roi_img, persist=True, conf=0.5, iou=0.5, tracker="bytetrack.yaml",verbose=False)
 
                 if results[0].boxes is not None and results[0].boxes.id is not None:
                     boxes = results[0].boxes.xyxy.cpu().numpy()
@@ -286,25 +309,42 @@ class CameraService:
 
                     current_boxes = []
                     frame_defects = {"Label": False, "Crushed": False, "Discolored": False}
+                    combined_obj_data = {}
 
                     for box, obj_id, cls_idx in zip(boxes, ids, clss):
                         obj_id = int(obj_id)
                         cls.active_last_seen[obj_id] = cls._now()
                         class_name = cls.model.names[cls_idx]
-                        
-                        id_defects = {"Label": False, "Crushed": False, "Discolored": False}
-                        if class_name in ("Label", "Normal"): id_defects["Label"] = True
-                        elif class_name == "Crushed": id_defects["Crushed"] = True
-                        elif class_name == "Discolored": id_defects["Discolored"] = True
-                        elif class_name == "Both_Defect":
-                            id_defects["Crushed"] = True
-                            id_defects["Discolored"] = True
+                        if obj_id not in combined_obj_data:
+                            combined_obj_data[obj_id] = {
+                            "box": box, 
+                            "defects": {"Label": False, "Crushed": False, "Discolored": False}
+                        }
 
-                        cls.update_temp_frame(obj_id, raw_frame, box, id_defects)
+                        if class_name == "Label":
+                            combined_obj_data[obj_id]["defects"]["Label"] = True
+                        elif class_name == "Crushed":
+                            combined_obj_data[obj_id]["defects"]["Crushed"] = True
+                        elif class_name == "Discolored":
+                            combined_obj_data[obj_id]["defects"]["Discolored"] = True
+                        elif class_name == "Both_Defect":
+                            combined_obj_data[obj_id]["defects"]["Crushed"] = True
+                            combined_obj_data[obj_id]["defects"]["Discolored"] = True
+
+                        current_boxes.append({"box": box, "id": obj_id, "class": class_name})
+
+                        # 2. 이미지 저장 순간(best_score)을 위해 데이터 업데이트
+                        # 이 함수 내부에서 이미 같은 obj_id에 대해 정보를 합치도록 되어있어야 함
+                    for obj_id, info in combined_obj_data.items():
+                        cls.active_last_seen[obj_id] = cls._now()
+                        # 여기서 info["defects"]["Label"]은 진짜 Label 박스가 있을 때만 True입니다.
+                        cls.update_temp_frame(obj_id, raw_frame, info["box"], info["defects"])
                         
-                        frame_defects["Label"] |= id_defects["Label"]
-                        frame_defects["Crushed"] |= id_defects["Crushed"]
-                        frame_defects["Discolored"] |= id_defects["Discolored"]
+                        # 3. UI 표시용 프레임 결함 합치기
+                        frame_defects["Label"] |= info["defects"]["Label"]
+                        frame_defects["Crushed"] |= info["defects"]["Crushed"]
+                        frame_defects["Discolored"] |= info["defects"]["Discolored"]
+                        
                         current_boxes.append({"box": box, "id": obj_id, "class": class_name})
 
                     cls.current_camera_defects = frame_defects
@@ -321,9 +361,12 @@ class CameraService:
 
                 # 사라진 물체 Finalize
                 now = cls._now()
-                to_finalize = [oid for oid, last_seen in list(cls.active_last_seen.items())
-                               if (now - last_seen) > cls.FINALIZE_GAP_SECONDS]
-                for oid in to_finalize:
+                to_fin = [
+                    oid for oid, d in cls.temp_image_buffer.items()
+                    if (now - d.get("last_seen", 0)) > cls.FINALIZE_GAP_SECONDS
+                    and d.get("passed_center", False)
+                ]
+                for oid in to_fin:
                     cls.active_last_seen.pop(oid, None)
                     cls._finalize_object(oid)
 
